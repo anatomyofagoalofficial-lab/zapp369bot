@@ -21,7 +21,7 @@ Hit 🚀 Rocket + 🔥 Fire on our chart:
 👉 https://dexscreener.com/solana/awguynxlmr7kohfqs9cdmatckvnhxbrg1gmukftpywfr
 
 ⭐ MISSION 2 — Jupiter
-Click the ⭐ Star on our Jupiter page:
+Click on the top left corner ⭐ Star on our Jupiter page (next to our ⚡ZAPP):
 👉 https://jup.ag/tokens/Ab16ce5SDbibTbXevxHLpqUnUvu9tNkkpaJcSDvCpump
 
 ━━━━━━━━━━━━━━━━━━━━
