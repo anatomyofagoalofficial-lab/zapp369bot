@@ -17,7 +17,7 @@ We are getting VERIFIED on Jupiter. We need YOUR help RIGHT NOW.
 
 ━━━━━━━━━━━━━━━━━━━━
 🚀 MISSION 1 — DEXScreener
-Hit 🚀 Rocket + ❤️ Heart on our chart:
+Hit 🚀 Rocket + 🔥 Fire on our chart:
 👉 https://dexscreener.com/solana/awguynxlmr7kohfqs9cdmatckvnhxbrg1gmukftpywfr
 
 ⭐ MISSION 2 — Jupiter
