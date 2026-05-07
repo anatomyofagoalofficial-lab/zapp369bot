@@ -4,7 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ⚡ PASTE YOUR NEW TOKEN HERE
-BOT_TOKEN = "7889720955:AAF6NHU37-hDzOQSSzhp42BDgRfwJyfQ4Nc"
+BOT_TOKEN = "7889720955:AAGb2lJnUilRWA7ZWCPWx53HE1fG0KpU_S8"
 
 # Your Telegram group username or numeric ID
 GROUP_CHAT_ID = "@ZAPP369"
