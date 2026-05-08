@@ -147,7 +147,7 @@ async def bounty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 MISSION 1 — DEXScreener\n"
         "Hit 🚀 Rocket or 🔥 Fire on our chart\n\n"
         "⭐ MISSION 2 — Jupiter\n"
-        "Click the ⭐ Star on Jupiter\n\n"
+        "Click on the top left corner ⭐ Star on our Jupiter page (next to our ⚡ZAPP)\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "💰 REWARD: $1 in ZAPP instantly!\n\n"
         "HOW TO CLAIM:\n"
