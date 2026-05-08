@@ -1,16 +1,16 @@
-import asyncio
 import logging
-import aiohttp
+import threading
+import time
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue
-
+from telegram.ext import Application, CommandHandler, ContextTypes
+import asyncio
+ 
 # ⚡ PASTE YOUR BOT TOKEN HERE
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-
-# Your Telegram group
+BOT_TOKEN = "7889720955:AAGTdGw5PNQ99GVwtSLExJ4KwORXlIWNUUI"
+ 
 GROUP_CHAT_ID = "@ZAPP369"
-
-# Token & DEX info
+ 
 TOKEN_MINT = "Ab16ce5SDbibTbXevxHLpqUnUvu9tNkkpaJcSDvCpump"
 DEX_PAIR = "awguynxlmr7kohfqs9cdmatckvnhxbrg1gmukftpywfr"
 JUPITER_URL = f"https://jup.ag/tokens/{TOKEN_MINT}"
@@ -18,32 +18,29 @@ DEX_URL = f"https://dexscreener.com/solana/{DEX_PAIR}"
 PUMPFUN_URL = f"https://pump.fun/coin/{TOKEN_MINT}"
 WEBSITE_URL = "https://zapp369.energy"
 WHITEPAPER_URL = "https://zapp369.energy/ZAPP_Whitepaper_369.pdf"
-
-# Milestone tracking
+ 
 MILESTONES = [20000, 30000, 45000, 100000, 500000, 1000000, 10000000]
 announced_milestones = set()
-
+ 
 logging.basicConfig(level=logging.INFO)
-
-
-async def fetch_price_data():
-    url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{DEX_PAIR}"
+ 
+ 
+def fetch_price_data():
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                data = await resp.json()
-                pair = data.get("pair", {})
-                return {
-                    "price": pair.get("priceUsd", "N/A"),
-                    "mcap": pair.get("fdv", None),
-                    "change_24h": pair.get("priceChange", {}).get("h24", "N/A"),
-                    "volume_24h": pair.get("volume", {}).get("h24", "N/A"),
-                    "liquidity": pair.get("liquidity", {}).get("usd", "N/A"),
-                }
+        url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{DEX_PAIR}"
+        r = requests.get(url, timeout=10)
+        pair = r.json().get("pair", {})
+        return {
+            "price": pair.get("priceUsd", "N/A"),
+            "mcap": pair.get("fdv", None),
+            "change_24h": pair.get("priceChange", {}).get("h24", "N/A"),
+            "volume_24h": pair.get("volume", {}).get("h24", "N/A"),
+            "liquidity": pair.get("liquidity", {}).get("usd", "N/A"),
+        }
     except Exception:
         return None
-
-
+ 
+ 
 def format_number(n):
     try:
         n = float(n)
@@ -55,8 +52,8 @@ def format_number(n):
             return f"${n:.4f}"
     except Exception:
         return str(n)
-
-
+ 
+ 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚡ ZAPP369bot is live!\n\n"
@@ -69,10 +66,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/whitepaper — read whitepaper\n\n"
         "3 · 6 · 9 ∞"
     )
-
-
+ 
+ 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = await fetch_price_data()
+    data = fetch_price_data()
     if not data:
         await update.message.reply_text("⚠️ Could not fetch price. Try again later.")
         return
@@ -88,10 +85,10 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = [[InlineKeyboardButton("📊 View Chart", url=DEX_URL)]]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+ 
+ 
 async def mcap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = await fetch_price_data()
+    data = fetch_price_data()
     if not data or not data["mcap"]:
         await update.message.reply_text("⚠️ Could not fetch market cap. Try again later.")
         return
@@ -106,8 +103,8 @@ async def mcap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = [[InlineKeyboardButton("⭐ Star on Jupiter", url=JUPITER_URL)]]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+ 
+ 
 async def links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "⚡ ZAPP OFFICIAL LINKS ⚡\n\n"
@@ -125,8 +122,8 @@ async def links(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📄 Whitepaper", url=WHITEPAPER_URL)],
     ]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+ 
+ 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "⚡ BUY $ZAPP NOW\n\n"
@@ -140,15 +137,15 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⚡ Buy on pump.fun", url=PUMPFUN_URL)],
     ]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+ 
+ 
 async def bounty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "⚡ ZAPP BOUNTY IS LIVE 🌀\n\n"
         "Help us get VERIFIED on Jupiter!\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🚀 MISSION 1 — DEXScreener\n"
-        "Hit 🚀 Rocket + ❤️ Heart on our chart\n\n"
+        "Hit 🚀 Rocket or 🔥 Fire on our chart\n\n"
         "⭐ MISSION 2 — Jupiter\n"
         "Click the ⭐ Star on Jupiter\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
@@ -166,8 +163,8 @@ async def bounty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🌐 Website", url=WEBSITE_URL)],
     ]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
+ 
+ 
 async def whitepaper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "⚡ ZAPP Whitepaper — Tesla's Unfinished Revolution\n\n"
@@ -178,10 +175,20 @@ async def whitepaper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     keyboard = [[InlineKeyboardButton("📄 Read Whitepaper", url=WHITEPAPER_URL)]]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-
-
-async def auto_bounty_reminder(context: ContextTypes.DEFAULT_TYPE):
-    msg = (
+ 
+ 
+def background_scheduler(bot):
+    """Runs in a separate thread — sends auto reminders and checks milestones."""
+    global announced_milestones
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+ 
+    bounty_interval = 4 * 60 * 60  # 4 hours
+    milestone_interval = 10 * 60   # 10 minutes
+    last_bounty = time.time() - bounty_interval + 3600  # first reminder after 1h
+    last_milestone = time.time()
+ 
+    BOUNTY_MSG = (
         "⚡ REMINDER — BOUNTY STILL LIVE 🌀\n\n"
         "Have you completed your missions yet?\n\n"
         f"⭐ Star us on Jupiter → {JUPITER_URL}\n"
@@ -189,48 +196,58 @@ async def auto_bounty_reminder(context: ContextTypes.DEFAULT_TYPE):
         "Post screenshots + SOL wallet = $1 ZAPP instantly!\n"
         "3 · 6 · 9 ∞ ⚡"
     )
-    keyboard = [
+    BOUNTY_KEYBOARD = InlineKeyboardMarkup([
         [InlineKeyboardButton("⭐ Star on Jupiter", url=JUPITER_URL)],
         [InlineKeyboardButton("🚀 React on DEXScreener", url=DEX_URL)],
-    ]
-    await context.bot.send_message(
-        chat_id=GROUP_CHAT_ID,
-        text=msg,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-async def auto_milestone_check(context: ContextTypes.DEFAULT_TYPE):
-    global announced_milestones
-    data = await fetch_price_data()
-    if not data or not data["mcap"]:
-        return
-    mc = float(data["mcap"])
-    for milestone in MILESTONES:
-        if mc >= milestone and milestone not in announced_milestones:
-            announced_milestones.add(milestone)
-            msg = (
-                f"🚀⚡ MILESTONE REACHED! ⚡🚀\n\n"
-                f"$ZAPP just hit {format_number(milestone)} Market Cap!\n\n"
-                f"💰 Current MCap: {format_number(mc)}\n"
-                f"💵 Price: ${data['price']}\n\n"
-                f"This is only the beginning!\n"
-                f"3 · 6 · 9 ∞ ⚡"
-            )
-            keyboard = [
-                [InlineKeyboardButton("📊 View Chart", url=DEX_URL)],
-                [InlineKeyboardButton("⭐ Star on Jupiter", url=JUPITER_URL)],
-            ]
-            await context.bot.send_message(
-                chat_id=GROUP_CHAT_ID,
-                text=msg,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-
+    ])
+ 
+    while True:
+        now = time.time()
+ 
+        # Auto bounty reminder
+        if now - last_bounty >= bounty_interval:
+            try:
+                loop.run_until_complete(
+                    bot.send_message(chat_id=GROUP_CHAT_ID, text=BOUNTY_MSG, reply_markup=BOUNTY_KEYBOARD)
+                )
+                last_bounty = now
+            except Exception as e:
+                logging.error(f"Bounty reminder error: {e}")
+ 
+        # Milestone check
+        if now - last_milestone >= milestone_interval:
+            try:
+                data = fetch_price_data()
+                if data and data["mcap"]:
+                    mc = float(data["mcap"])
+                    for milestone in MILESTONES:
+                        if mc >= milestone and milestone not in announced_milestones:
+                            announced_milestones.add(milestone)
+                            msg = (
+                                f"🚀⚡ MILESTONE REACHED! ⚡🚀\n\n"
+                                f"$ZAPP just hit {format_number(milestone)} Market Cap!\n\n"
+                                f"💰 Current MCap: {format_number(mc)}\n"
+                                f"💵 Price: ${data['price']}\n\n"
+                                f"This is only the beginning!\n"
+                                f"3 · 6 · 9 ∞ ⚡"
+                            )
+                            keyboard = InlineKeyboardMarkup([
+                                [InlineKeyboardButton("📊 View Chart", url=DEX_URL)],
+                                [InlineKeyboardButton("⭐ Star on Jupiter", url=JUPITER_URL)],
+                            ])
+                            loop.run_until_complete(
+                                bot.send_message(chat_id=GROUP_CHAT_ID, text=msg, reply_markup=keyboard)
+                            )
+                last_milestone = now
+            except Exception as e:
+                logging.error(f"Milestone check error: {e}")
+ 
+        time.sleep(30)
+ 
+ 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
+ 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("mcap", mcap))
@@ -238,14 +255,14 @@ def main():
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("bounty", bounty))
     app.add_handler(CommandHandler("whitepaper", whitepaper))
-
-    job_queue = app.job_queue
-    job_queue.run_repeating(auto_bounty_reminder, interval=14400, first=3600)  # every 4h
-    job_queue.run_repeating(auto_milestone_check, interval=600, first=60)       # every 10 min
-
+ 
+    # Start background scheduler in separate thread
+    t = threading.Thread(target=background_scheduler, args=(app.bot,), daemon=True)
+    t.start()
+ 
     print("⚡ ZAPP369bot is running with all features!")
     app.run_polling()
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
