@@ -192,7 +192,7 @@ def background_scheduler(bot):
         "⚡ REMINDER — BOUNTY STILL LIVE 🌀\n\n"
         "Have you completed your missions yet?\n\n"
         f"⭐ Star us on Jupiter → {JUPITER_URL}\n"
-        f"🚀❤️ React on DEX → {DEX_URL}\n\n"
+        f"🚀🔥 React on DEX → {DEX_URL}\n\n"
         "Post screenshots + SOL wallet = $1 ZAPP instantly!\n"
         "3 · 6 · 9 ∞ ⚡"
     )
