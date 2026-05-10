@@ -7,7 +7,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import asyncio
  
 # ⚡ PASTE YOUR BOT TOKEN HERE
-BOT_TOKEN = "7889720955:AAGTdGw5PNQ99GVwtSLExJ4KwORXlIWNUUI"
+BOT_TOKEN = "7889720955:AAFTD893jTS2k-nieU8NkPjABfQJskg66rc"
  
 GROUP_CHAT_ID = "@ZAPP369"
  
