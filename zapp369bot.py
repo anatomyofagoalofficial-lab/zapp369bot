@@ -392,6 +392,37 @@ def until_from(seconds):
     return datetime.now(timezone.utc) + timedelta(seconds=seconds) if seconds else None
 
 
+def html_body(message, drop=1):
+    """
+    Return the message text/caption AS HTML (preserving premium custom emoji and
+    any native formatting), with the leading `drop` whitespace-separated tokens
+    removed (e.g. the command, or command + note-name).
+    """
+    if message is None:
+        return ""
+    if message.text is not None:
+        h = message.text_html
+    elif message.caption is not None:
+        h = message.caption_html or ""
+    else:
+        return ""
+    if not h:
+        return ""
+    pieces = h.split(" ", drop)
+    return pieces[drop].strip() if len(pieces) > drop else ""
+
+
+def html_full(message):
+    """Full text/caption of a message as HTML (no token stripping)."""
+    if message is None:
+        return ""
+    if message.text is not None:
+        return message.text_html
+    if message.caption is not None:
+        return message.caption_html or ""
+    return ""
+
+
 def glob_match(pattern: str, text: str) -> bool:
     """Case-insensitive glob (supports * and ?). Plain words match as whole words."""
     text = text.lower()
@@ -509,19 +540,19 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if reply:
         if reply.photo:
             kind, file_id = "photo", reply.photo[-1].file_id
-            content = reply.caption or ""
+            content = reply.caption_html or ""
         elif reply.animation:
-            kind, file_id, content = "animation", reply.animation.file_id, reply.caption or ""
+            kind, file_id, content = "animation", reply.animation.file_id, reply.caption_html or ""
         elif reply.video:
-            kind, file_id, content = "video", reply.video.file_id, reply.caption or ""
+            kind, file_id, content = "video", reply.video.file_id, reply.caption_html or ""
         elif reply.sticker:
             kind, file_id = "sticker", reply.sticker.file_id
         elif reply.document:
-            kind, file_id, content = "document", reply.document.file_id, reply.caption or ""
+            kind, file_id, content = "document", reply.document.file_id, reply.caption_html or ""
         else:
-            content = reply.text or reply.caption or ""
+            content = html_full(reply)
     else:
-        content = msg.text.partition(context.args[0])[2].strip()
+        content = html_body(msg, drop=2)
     if not content and not file_id:
         await msg.reply_text("Give me some content to save.")
         return
@@ -600,7 +631,7 @@ async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Usage: /filter keyword reply text")
         return
     keyword = context.args[0].lower()
-    reply = update.effective_message.text.partition(context.args[0])[2].strip()
+    reply = html_body(update.effective_message, drop=2)
     db.execute("INSERT OR REPLACE INTO filters (chat_id,keyword,reply) VALUES (?,?,?)",
                (target_chat(update), keyword, reply))
     await update.effective_message.reply_text(f"✅ Filter on “{esc(keyword)}” added.",
@@ -633,7 +664,7 @@ async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @group_only
 @admin_only
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.effective_message.text.partition(" ")[2].strip()
+    text = html_body(update.effective_message, drop=1)
     if not text:
         await update.effective_message.reply_text("Usage: /setrules <your rules text>")
         return
@@ -1683,7 +1714,7 @@ _captcha_answers = {}
 @group_only
 @admin_only
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.effective_message.text.partition(" ")[2].strip()
+    text = html_body(update.effective_message, drop=1)
     if not text:
         await update.effective_message.reply_text(
             "Usage: /setwelcome <text>\nPlaceholders: {name} {first} {username} {id} {group} {count}\n"
@@ -1696,7 +1727,7 @@ async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @group_only
 @admin_only
 async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.effective_message.text.partition(" ")[2].strip()
+    text = html_body(update.effective_message, drop=1)
     if not text:
         await update.effective_message.reply_text("Usage: /setgoodbye <text>  (placeholders supported)")
         return
