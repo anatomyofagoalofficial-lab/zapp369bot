@@ -1067,7 +1067,7 @@ No voting button. Banner is optional and set by an admin via /setbuyimage.
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import CommandHandler, ContextTypes
+from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 
 # --------------------------- ZAPP constants --------------------------------
@@ -1122,15 +1122,40 @@ def _buy_caption():
     )
 
 
-async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send just the contract address, tap-to-copy."""
-    await update.effective_message.reply_text(
+def _ca_text():
+    return (
         "🔴 <b>Official ⚡ZAPP CA</b> (tap to copy):\n"
         f"<code>{esc(CA)}</code>\n\n"
         "⚠️ Only ever use this CA. Admins NEVER DM first.\n"
-        "∞ 3 · 6 · 9 ∞",
-        parse_mode=ParseMode.HTML, reply_markup=_buy_keyboard(),
+        "∞ 3 · 6 · 9 ∞"
+    )
+
+
+async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send just the contract address, tap-to-copy (slash command)."""
+    await update.effective_message.reply_text(
+        _ca_text(), parse_mode=ParseMode.HTML, reply_markup=_buy_keyboard(),
         disable_web_page_preview=True)
+
+
+# words that, typed on their own, should trigger the tap-to-copy CA
+_CA_TRIGGERS = {
+    "ca", "contract", "contract address", "address", "the ca", "ca pls",
+    "ca please", "send ca", "drop ca", "drop the ca", "send the ca",
+    "what's the ca", "whats the ca", "what is the ca", "$ca", "ca?",
+}
+
+
+async def ca_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply with the tap-to-copy CA when someone just types 'ca' / 'contract'."""
+    msg = update.effective_message
+    if not msg or not msg.text:
+        return
+    cleaned = msg.text.strip().lower().strip("?.!¿¡ ").strip()
+    if cleaned in _CA_TRIGGERS:
+        await msg.reply_text(
+            _ca_text(), parse_mode=ParseMode.HTML, reply_markup=_buy_keyboard(),
+            disable_web_page_preview=True)
 
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3159,7 +3184,28 @@ async def _run_filters(update, msg, chat_id):
     for r in db.query("SELECT keyword,reply FROM filters WHERE chat_id=?", (chat_id,)):
         kw = r["keyword"]
         if (" " in kw and kw in low) or (kw in words):
-            await safe_reply(msg, r["reply"])
+            reply = r["reply"] or ""
+            # If the filter's reply contains the contract address, render it as
+            # tap-to-copy (monospace) with the buy buttons — like /ca.
+            _CA = globals().get("CA")
+            _kbd = globals().get("_buy_keyboard")
+            _escfn = globals().get("esc")
+            if _CA and _kbd and _escfn and _CA in reply:
+                from html import escape as _h
+                before, _, after = reply.partition(_CA)
+                body = (_h(before).strip() + "\n" if before.strip() else "")
+                body += f"<code>{_escfn(_CA)}</code>"
+                if after.strip():
+                    body += "\n" + _h(after).strip()
+                try:
+                    await msg.reply_text(
+                        body, parse_mode=ParseMode.HTML,
+                        reply_markup=_kbd(),
+                        disable_web_page_preview=True)
+                    return
+                except BadRequest:
+                    pass  # fall back to plain below
+            await safe_reply(msg, reply)
             return
 
 
