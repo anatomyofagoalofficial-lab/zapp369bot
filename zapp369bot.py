@@ -161,6 +161,7 @@ def init_db():
         for stmt in (
             "ALTER TABLE settings ADD COLUMN rules_entities TEXT",
             "ALTER TABLE settings ADD COLUMN welcome_entities TEXT",
+            "ALTER TABLE settings ADD COLUMN buy_image TEXT",
         ):
             try:
                 c.execute(stmt)
@@ -912,6 +913,104 @@ def register_content(app):
 
 
 # ===========================================================================
+# ---- buy ------------------------------------------------------------
+# ===========================================================================
+
+"""
+⚡ /buy — MajorBuyBot-style buy card for ZAPP.
+
+Sends an optional banner image, a tap-to-copy contract address, and a row of
+clean link buttons (Jupiter / Chart / Website / How-to-buy / socials).
+No voting button. Banner is optional and set by an admin via /setbuyimage.
+"""
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+from telegram.ext import CommandHandler, ContextTypes
+
+
+# --------------------------- ZAPP constants --------------------------------
+CA = "Ab16ce5SDbibTbXevxHLpqUnUvu9tNkkpaJcSDvCpump"
+WEBSITE = "https://zapp369.energy"
+HOWTOBUY = "https://zapp369.energy/how-to-buy"
+TWITTER = "https://x.com/ZAPPonSOL"
+TELEGRAM = "https://t.me/ZAPP369"
+CHART = f"https://dexscreener.com/solana/{CA}"
+JUPITER = f"https://jup.ag/tokens/{CA}"
+
+
+def _buy_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪐 Buy on Jupiter", url=JUPITER),
+         InlineKeyboardButton("📊 Chart", url=CHART)],
+        [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("📖 How to Buy", url=HOWTOBUY)],
+        [InlineKeyboardButton("𝕏 Twitter", url=TWITTER),
+         InlineKeyboardButton("💬 Community", url=TELEGRAM)],
+    ])
+
+
+def _buy_caption():
+    # <code> renders monospace, which is tap-to-copy on mobile Telegram.
+    return (
+        "⚡ <b>BUY ZAPP</b> ⚡\n"
+        "Free Energy = Free Money ∞\n\n"
+        "<b>Official CA</b> (tap to copy):\n"
+        f"<code>{esc(CA)}</code>\n\n"
+        "Tap a button below to buy, chart, or learn more.\n"
+        "3 · 6 · 9 ∞"
+    )
+
+
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    caption = _buy_caption()
+    kb = _buy_keyboard()
+    chat_id = target_chat(update)
+    s = db.get_settings(chat_id)
+    img = s["buy_image"] if "buy_image" in s.keys() else None
+
+    if img:
+        try:
+            await msg.reply_photo(img, caption=caption, parse_mode=ParseMode.HTML,
+                                  reply_markup=kb)
+            return
+        except BadRequest:
+            # stale/invalid file_id (e.g. after a redeploy) — fall back to text
+            pass
+    await msg.reply_text(caption, parse_mode=ParseMode.HTML, reply_markup=kb,
+                         disable_web_page_preview=True)
+
+
+@group_only
+@admin_only
+async def setbuyimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    reply = msg.reply_to_message
+    if not reply or not reply.photo:
+        await msg.reply_text(
+            "Reply to a photo with /setbuyimage to set the /buy banner.")
+        return
+    file_id = reply.photo[-1].file_id
+    db.set_setting(target_chat(update), "buy_image", file_id)
+    await msg.reply_text("✅ Buy banner set. Try /buy to preview.")
+
+
+@group_only
+@admin_only
+async def delbuyimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db.set_setting(target_chat(update), "buy_image", None)
+    await update.effective_message.reply_text(
+        "🗑 Buy banner removed. /buy will now send text + buttons only.")
+
+
+def register_buy(app):
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler("setbuyimage", setbuyimage))
+    app.add_handler(CommandHandler("delbuyimage", delbuyimage))
+
+
+# ===========================================================================
 # ---- federation ------------------------------------------------------------
 # ===========================================================================
 
@@ -1140,6 +1239,8 @@ HELP_TEXT = (
     "Placeholders: {name} {first} {username} {id} {group} — buttons via [Txt](buttonurl://link)\n\n"
     "<b>📝 Content</b>\n"
     "<code>/save /get /notes /clear</code> (or <code>#note</code>)  •  <code>/filter /filters /stop</code>  •  <code>/setrules /rules</code>\n\n"
+    "<b>⚡ Token</b>\n"
+    "<code>/buy</code> — buy card (CA + buttons)  •  <code>/setbuyimage</code> (reply to a photo)  •  <code>/delbuyimage</code>\n\n"
     "<b>🔒 Protection</b>\n"
     "<code>/lock /unlock /locks</code>  •  <code>/setflood /flood</code>  •  <code>/antiraid</code>  •  <code>/nightmode</code>\n"
     "<code>/addblocklist /blocklists /unblocklist /blocklistaction</code>\n\n"
@@ -2474,6 +2575,7 @@ async def _post_init(app):
     try:
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
+            ("buy", "How to buy ZAPP (CA + links)"),
             ("rules", "Show the group rules"),
             ("report", "Report a message to admins"),
             ("afk", "Set yourself away"),
@@ -2491,6 +2593,7 @@ def main():
     register_warnings(app)
     register_greetings(app)
     register_content(app)
+    register_buy(app)
     register_protection(app)
     register_federation(app)
     register_watcher(app)
