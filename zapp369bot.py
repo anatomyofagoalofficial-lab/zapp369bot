@@ -1122,6 +1122,17 @@ def _buy_caption():
     )
 
 
+async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send just the contract address, tap-to-copy."""
+    await update.effective_message.reply_text(
+        "🔴 <b>Official ⚡ZAPP CA</b> (tap to copy):\n"
+        f"<code>{esc(CA)}</code>\n\n"
+        "⚠️ Only ever use this CA. Admins NEVER DM first.\n"
+        "∞ 3 · 6 · 9 ∞",
+        parse_mode=ParseMode.HTML, reply_markup=_buy_keyboard(),
+        disable_web_page_preview=True)
+
+
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     caption = _buy_caption()
@@ -1166,6 +1177,7 @@ async def delbuyimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register_buy(app):
     app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(CommandHandler(["ca", "contract"], ca))
     app.add_handler(CommandHandler("setbuyimage", setbuyimage))
     app.add_handler(CommandHandler("delbuyimage", delbuyimage))
 
@@ -3173,6 +3185,7 @@ async def _post_init(app):
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
             ("buy", "How to buy ZAPP (CA + links)"),
+            ("ca", "Official contract address"),
             ("top", "Points leaderboard"),
             ("points", "Check your points"),
             ("rules", "Show the group rules"),
