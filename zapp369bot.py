@@ -574,19 +574,19 @@ async def save_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if reply:
         if reply.photo:
             kind, file_id = "photo", reply.photo[-1].file_id
-            content = reply.caption_html or ""
+            content = reply.caption or ""
         elif reply.animation:
-            kind, file_id, content = "animation", reply.animation.file_id, reply.caption_html or ""
+            kind, file_id, content = "animation", reply.animation.file_id, reply.caption or ""
         elif reply.video:
-            kind, file_id, content = "video", reply.video.file_id, reply.caption_html or ""
+            kind, file_id, content = "video", reply.video.file_id, reply.caption or ""
         elif reply.sticker:
             kind, file_id = "sticker", reply.sticker.file_id
         elif reply.document:
-            kind, file_id, content = "document", reply.document.file_id, reply.caption_html or ""
+            kind, file_id, content = "document", reply.document.file_id, reply.caption or ""
         else:
-            content = html_full(reply)
+            content = reply.text or reply.caption or ""
     else:
-        content = html_body(msg, drop=2)
+        content = msg.text.partition(context.args[0])[2].strip()
     if not content and not file_id:
         await msg.reply_text("Give me some content to save.")
         return
@@ -664,7 +664,7 @@ async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Usage: /filter keyword reply text")
         return
     keyword = context.args[0].lower()
-    reply = html_body(update.effective_message, drop=2)
+    reply = update.effective_message.text.partition(context.args[0])[2].strip()
     db.execute("INSERT OR REPLACE INTO filters (chat_id,keyword,reply) VALUES (?,?,?)",
                (target_chat(update), keyword, reply))
     await update.effective_message.reply_text(f"✅ Filter on “{esc(keyword)}” added.",
@@ -697,7 +697,7 @@ async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @group_only
 @admin_only
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = html_body(update.effective_message, drop=1)
+    text = update.effective_message.text.partition(" ")[2].strip()
     if not text:
         await update.effective_message.reply_text("Usage: /setrules <your rules text>")
         return
@@ -1745,7 +1745,7 @@ _captcha_answers = {}
 @group_only
 @admin_only
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = html_body(update.effective_message, drop=1)
+    text = update.effective_message.text.partition(" ")[2].strip()
     if not text:
         await update.effective_message.reply_text(
             "Usage: /setwelcome <text>\nPlaceholders: {name} {first} {username} {id} {group} {count}\n"
@@ -1758,7 +1758,7 @@ async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @group_only
 @admin_only
 async def setgoodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = html_body(update.effective_message, drop=1)
+    text = update.effective_message.text.partition(" ")[2].strip()
     if not text:
         await update.effective_message.reply_text("Usage: /setgoodbye <text>  (placeholders supported)")
         return
