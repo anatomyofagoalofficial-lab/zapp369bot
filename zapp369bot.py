@@ -1047,7 +1047,7 @@ def _buy_keyboard():
 def _buy_caption():
     # <code> renders monospace, which is tap-to-copy on mobile Telegram.
     return (
-        "⚡ <b>BUY ⚡ZAPP</b> ⚡\n"
+        "⚡ <b>BUY ⚡ZAPP</b>\n"
         "∞ Free Energy = Free Money ∞\n\n"
         "<b>Official CA</b> (tap to copy):\n"
         f"<code>{esc(CA)}</code>\n\n"
