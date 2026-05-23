@@ -98,7 +98,8 @@ def init_db():
                 nightmode_on INTEGER DEFAULT 0,
                 nightmode_start TEXT DEFAULT '23:00',
                 nightmode_end TEXT DEFAULT '07:00',
-                log_channel INTEGER
+                log_channel INTEGER,
+                rules_entities TEXT
             );
             CREATE TABLE IF NOT EXISTS warns (
                 chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
@@ -155,6 +156,12 @@ def init_db():
             );
             """
         )
+        # migrations for existing databases (ignore if column already present)
+        for stmt in ("ALTER TABLE settings ADD COLUMN rules_entities TEXT",):
+            try:
+                c.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         c.commit()
 
 
@@ -211,12 +218,13 @@ duration & glob parsing, welcome formatting, and in-memory state.
 import re
 import html
 import time
+import json
 import fnmatch
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity,
 )
 from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import BadRequest, Forbidden
@@ -392,6 +400,72 @@ def until_from(seconds):
     return datetime.now(timezone.utc) + timedelta(seconds=seconds) if seconds else None
 
 
+# ---------------------------------------------------------------------------
+# Rich content: capture & re-send messages with premium custom emoji intact,
+# using Telegram message ENTITIES (not HTML) so nothing can leak as raw code.
+# Falls back to plain text if Telegram won't let the bot send the custom emoji.
+# ---------------------------------------------------------------------------
+def split_body(text, ntokens=1):
+    """Drop `ntokens` leading whitespace-separated tokens (command, or command+name).
+    Returns (body, prefix_len). The prefix is always ASCII so prefix_len doubles as a
+    UTF-16 offset, keeping entity math simple."""
+    text = text or ""
+    m = re.match(r"(?:\S+\s+){%d}" % ntokens, text)
+    if not m:
+        return "", len(text)
+    return text[m.end():], m.end()
+
+
+def rebase_entities(entities, prefix):
+    """Shift entity offsets to be relative to the body; drop the command entity."""
+    out = []
+    for e in (entities or []):
+        if e.type == MessageEntity.BOT_COMMAND or e.offset < prefix:
+            continue
+        d = {"type": e.type, "offset": e.offset - prefix, "length": e.length}
+        for attr in ("custom_emoji_id", "url", "language"):
+            v = getattr(e, attr, None)
+            if v:
+                d[attr] = v
+        out.append(d)
+    return out
+
+
+def capture_rich(message, ntokens=1):
+    """Return (body_text, [entity_dicts]) for a /set* command, preserving emoji."""
+    text = message.text if message.text is not None else (message.caption or "")
+    ents = message.entities or message.caption_entities or []
+    body, prefix = split_body(text, ntokens)
+    return body.rstrip(), rebase_entities(ents, prefix)
+
+
+def build_entities(items):
+    """Rebuild MessageEntity objects from stored dicts."""
+    out = []
+    for d in (items or []):
+        kw = {"type": d["type"], "offset": d["offset"], "length": d["length"]}
+        for attr in ("custom_emoji_id", "url", "language"):
+            if d.get(attr):
+                kw[attr] = d[attr]
+        try:
+            out.append(MessageEntity(**kw))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+async def reply_rich(message, text, entities, **kwargs):
+    """Send text with custom-emoji entities; fall back to plain text if rejected."""
+    kwargs.setdefault("disable_web_page_preview", True)
+    try:
+        return await message.reply_text(text, entities=entities or None, **kwargs)
+    except BadRequest:
+        try:
+            return await message.reply_text(text, **kwargs)
+        except BadRequest:
+            return None
+
+
 def html_body(message, drop=1):
     """
     Return the message text/caption AS HTML (preserving premium custom emoji and
@@ -552,6 +626,7 @@ async def log_action(context, chat_id, text):
 # ===========================================================================
 
 """Notes, filters, rules, and blocklist."""
+import json
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -697,23 +772,30 @@ async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @group_only
 @admin_only
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.effective_message.text.partition(" ")[2].strip()
-    if not text:
+    body, ents = capture_rich(update.effective_message, 1)
+    if not body:
         await update.effective_message.reply_text("Usage: /setrules <your rules text>")
         return
-    db.set_setting(target_chat(update), "rules", text)
+    chat_id = target_chat(update)
+    db.set_setting(chat_id, "rules", body)
+    db.set_setting(chat_id, "rules_entities", json.dumps(ents) if ents else None)
     await update.effective_message.reply_text("✅ Rules saved.")
 
 
 @group_only
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = db.get_settings(target_chat(update))
-    if s["rules"]:
+    if not s["rules"]:
+        await update.effective_message.reply_text("No rules set. Admins: /setrules <text>")
+        return
+    raw_ents = s["rules_entities"] if "rules_entities" in s.keys() else None
+    if raw_ents:
+        ents = build_entities(json.loads(raw_ents))
+        await reply_rich(update.effective_message, s["rules"], ents)
+    else:
         text, markup = build_message(s["rules"], chat=update.effective_chat)
         await safe_reply(update.effective_message, f"📜 <b>Rules</b>\n\n{text}",
                          reply_markup=markup)
-    else:
-        await update.effective_message.reply_text("No rules set. Admins: /setrules <text>")
 
 
 # --------------------------- BLOCKLIST -------------------------------------
