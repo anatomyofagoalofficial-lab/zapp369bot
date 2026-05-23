@@ -2730,26 +2730,48 @@ async def setup_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         icon_map = {}
     created, failed = [], []
+    perm_error = False
     for i, (name, emoji) in enumerate(_ZAPP_TOPICS):
-        kwargs = {"name": name}
+        color = _TOPIC_COLORS[i % len(_TOPIC_COLORS)]
         custom = icon_map.get(emoji)
-        if custom:
-            kwargs["icon_custom_emoji_id"] = custom
-        else:
-            kwargs["icon_color"] = _TOPIC_COLORS[i % len(_TOPIC_COLORS)]
-        try:
-            await context.bot.create_forum_topic(chat.id, **kwargs)
-            created.append(name)
-        except Forbidden:
-            await update.effective_message.reply_text(
-                "🚫 I need the <b>Manage Topics</b> admin permission. Give me that, "
-                "then run /setuptopics again.", parse_mode=ParseMode.HTML)
-            return
-        except BadRequest:
+        made = False
+        for attempt in ("emoji", "color"):
+            if attempt == "emoji" and not custom:
+                continue
+            kwargs = {"name": name}
+            if attempt == "emoji":
+                kwargs["icon_custom_emoji_id"] = custom
+            else:
+                kwargs["icon_color"] = color
+            try:
+                await context.bot.create_forum_topic(chat.id, **kwargs)
+                created.append(name)
+                made = True
+                break
+            except Forbidden:
+                perm_error = True
+                break
+            except BadRequest as e:
+                m = str(e).lower()
+                if "right" in m or "admin" in m or "permission" in m:
+                    perm_error = True
+                    break
+                # otherwise (e.g. icon rejected) fall through and try a plain colour
+        if perm_error:
+            break
+        if not made:
             failed.append(name)
+    if perm_error:
+        await update.effective_message.reply_text(
+            "🚫 I can't create sections yet — I need the <b>Manage Topics</b> admin "
+            "permission.\n\nEasiest way (on your phone): open the group → tap the group "
+            "name → <b>Administrators</b> → tap <b>ZAPPbot</b> → turn on <b>Manage "
+            "Topics</b> → back out to save.\n\nThen run /setuptopics again. ⚡",
+            parse_mode=ParseMode.HTML)
+        return
     txt = "✅ Created: " + ", ".join(created) if created else "No topics created."
     if failed:
-        txt += "\n⚠️ Skipped (maybe already exist): " + ", ".join(failed)
+        txt += "\n⚠️ Skipped: " + ", ".join(failed)
     txt += "\n\nTip: run this only once — running again makes duplicates."
     await update.effective_message.reply_text(txt)
 
