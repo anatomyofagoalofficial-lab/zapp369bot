@@ -1064,10 +1064,13 @@ Sends an optional banner image, a tap-to-copy contract address, and a row of
 clean link buttons (Jupiter / Chart / Website / How-to-buy / socials).
 No voting button. Banner is optional and set by an admin via /setbuyimage.
 """
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler,
+)
 
 
 # --------------------------- ZAPP constants --------------------------------
@@ -1138,24 +1141,121 @@ async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
         disable_web_page_preview=True)
 
 
-# words that, typed on their own, should trigger the tap-to-copy CA
-_CA_TRIGGERS = {
-    "ca", "contract", "contract address", "address", "the ca", "ca pls",
-    "ca please", "send ca", "drop ca", "drop the ca", "send the ca",
-    "what's the ca", "whats the ca", "what is the ca", "$ca", "ca?",
-}
+# --------------------------- LIVE PRICE ------------------------------------
+DEX_API = f"https://api.dexscreener.com/latest/dex/tokens/{CA}"
 
 
-async def ca_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reply with the tap-to-copy CA when someone just types 'ca' / 'contract'."""
+def _short_usd(n):
+    """Format a number as $1.23M / $456.0K / $1.23."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "—"
+    a = abs(n)
+    if a >= 1e9:
+        return f"${n / 1e9:.2f}B"
+    if a >= 1e6:
+        return f"${n / 1e6:.2f}M"
+    if a >= 1e3:
+        return f"${n / 1e3:.2f}K"
+    return f"${n:,.2f}"
+
+
+def _price_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Chart", url=CHART),
+         InlineKeyboardButton("🪐 Buy", url=JUPITER)],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="zapp_price")],
+    ])
+
+
+def _format_price_pairs(pairs):
+    """Build the price message from DexScreener pairs. Returns text or None."""
+    if not pairs:
+        return None
+    # use the pair with the deepest liquidity (the real market)
+    pair = max(pairs, key=lambda p: float((p.get("liquidity") or {}).get("usd") or 0))
+    price = pair.get("priceUsd") or "?"
+    mc = pair.get("marketCap") or pair.get("fdv")
+    ch = (pair.get("priceChange") or {}).get("h24")
+    vol = (pair.get("volume") or {}).get("h24")
+    liq = (pair.get("liquidity") or {}).get("usd")
+    try:
+        chf = float(ch)
+    except (TypeError, ValueError):
+        chf = None
+    if chf is None:
+        chtxt = "—"
+    else:
+        arrow = "🟢" if chf >= 0 else "🔴"
+        chtxt = f"{arrow} {'+' if chf >= 0 else ''}{chf:.2f}%"
+    return (
+        "⚡ <b>⚡ZAPP — Live</b>\n\n"
+        f"💵 <b>Price:</b> ${price}\n"
+        f"📊 <b>Market Cap:</b> {_short_usd(mc)}\n"
+        f"📈 <b>24h:</b> {chtxt}\n"
+        f"💧 <b>Liquidity:</b> {_short_usd(liq)}\n"
+        f"🔄 <b>24h Volume:</b> {_short_usd(vol)}\n\n"
+        "∞ 3 · 6 · 9 ∞\n⚡ZAPP"
+    )
+
+
+async def _fetch_price_text():
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(DEX_API, headers={"User-Agent": "ZAPPbot/1.0"})
+            r.raise_for_status()
+            pairs = (r.json() or {}).get("pairs") or []
+    except Exception:  # noqa: BLE001 — network/parse errors -> friendly message
+        return None
+    return _format_price_pairs(pairs)
+
+
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Live ⚡ZAPP price from DexScreener."""
+    msg = update.effective_message
+    text = await _fetch_price_text()
+    if not text:
+        await msg.reply_text(
+            "⚡ Price feed is unavailable right now — try again in a moment.")
+        return
+    await msg.reply_text(text, parse_mode=ParseMode.HTML,
+                         reply_markup=_price_keyboard(),
+                         disable_web_page_preview=True)
+
+
+async def price_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    try:
+        await q.answer("Refreshing… ⚡")
+    except Exception:  # noqa: BLE001
+        pass
+    text = await _fetch_price_text()
+    if not text:
+        return
+    try:
+        await q.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=_price_keyboard(),
+                                  disable_web_page_preview=True)
+    except BadRequest:
+        pass  # "message is not modified" if price hasn't changed — ignore
+
+
+_PRICE_TRIGGERS = {"price", "mc", "marketcap", "market cap", "stats", "price?"}
+
+
+async def price_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply with live price when someone just types 'price' / 'mc'."""
     msg = update.effective_message
     if not msg or not msg.text:
         return
     cleaned = msg.text.strip().lower().strip("?.!¿¡ ").strip()
-    if cleaned in _CA_TRIGGERS:
-        await msg.reply_text(
-            _ca_text(), parse_mode=ParseMode.HTML, reply_markup=_buy_keyboard(),
-            disable_web_page_preview=True)
+    if cleaned in _PRICE_TRIGGERS:
+        text = await _fetch_price_text()
+        if text:
+            await msg.reply_text(text, parse_mode=ParseMode.HTML,
+                                 reply_markup=_price_keyboard(),
+                                 disable_web_page_preview=True)
 
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1203,8 +1303,14 @@ async def delbuyimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_buy(app):
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler(["ca", "contract"], ca))
+    app.add_handler(CommandHandler(["price", "mc", "marketcap", "stats"], price))
     app.add_handler(CommandHandler("setbuyimage", setbuyimage))
     app.add_handler(CommandHandler("delbuyimage", delbuyimage))
+    app.add_handler(CallbackQueryHandler(price_refresh_cb, pattern="^zapp_price$"))
+    # typed "price"/"mc" (no slash) -> live price. Own group so it runs alongside
+    # the moderation watcher (group 0) and points tracker (group 2).
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, price_keyword), group=3)
 
 
 # ===========================================================================
@@ -3231,6 +3337,7 @@ async def _post_init(app):
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
             ("buy", "How to buy ZAPP (CA + links)"),
+            ("price", "Live ZAPP price"),
             ("ca", "Official contract address"),
             ("top", "Points leaderboard"),
             ("points", "Check your points"),
