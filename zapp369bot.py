@@ -60,7 +60,22 @@ import os
 import sqlite3
 import secrets
 
-DB_PATH = os.environ.get("DB_PATH", "zapp369.db")
+# Resolve where the database lives, robustly:
+#  1) explicit DB_PATH if set
+#  2) else the Railway volume mount path (whatever it is) + zapp369.db
+#  3) else a local file
+_vol = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+DB_PATH = os.environ.get("DB_PATH") or (
+    os.path.join(_vol, "zapp369.db") if _vol else "zapp369.db")
+
+# Make sure the parent folder exists so SQLite can create the file instead of
+# crash-looping with "unable to open database file".
+_dbdir = os.path.dirname(DB_PATH)
+if _dbdir:
+    try:
+        os.makedirs(_dbdir, exist_ok=True)
+    except OSError:
+        DB_PATH = "zapp369.db"   # last-resort fallback so the bot stays up
 
 
 def _conn():
@@ -994,32 +1009,51 @@ from telegram.ext import CommandHandler, ContextTypes
 CA = "Ab16ce5SDbibTbXevxHLpqUnUvu9tNkkpaJcSDvCpump"
 WEBSITE = "https://zapp369.energy"
 HOWTOBUY = "https://zapp369.energy/how-to-buy"
+WHITEPAPER = "https://zapp369.energy/ZAPP_Whitepaper_369.pdf"
 TWITTER = "https://x.com/ZAPPonSOL"
 TELEGRAM = "https://t.me/ZAPP369"
+INSTAGRAM = "https://www.instagram.com/zapp369.energy/"
 CHART = f"https://dexscreener.com/solana/{CA}"
 JUPITER = f"https://jup.ag/tokens/{CA}"
+PUMPFUN = f"https://pump.fun/coin/{CA}"
+# TODO: add TikTok and Discord URLs when provided
+TIKTOK = ""
+DISCORD = ""
 
 
 def _buy_keyboard():
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("🪐 Buy on Jupiter", url=JUPITER),
-         InlineKeyboardButton("📊 Chart", url=CHART)],
-        [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("💊 Buy on pump.fun", url=PUMPFUN)],
+        [InlineKeyboardButton("📊 Chart", url=CHART),
          InlineKeyboardButton("📖 How to Buy", url=HOWTOBUY)],
+        [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("📄 Whitepaper", url=WHITEPAPER)],
         [InlineKeyboardButton("𝕏 Twitter", url=TWITTER),
-         InlineKeyboardButton("💬 Community", url=TELEGRAM)],
-    ])
+         InlineKeyboardButton("💬 Telegram", url=TELEGRAM)],
+    ]
+    # socials — only show buttons whose URL is set (Telegram rejects empty URLs)
+    socials = [
+        ("📸 Instagram", INSTAGRAM),
+        ("🎵 TikTok", TIKTOK),
+        ("👾 Discord", DISCORD),
+    ]
+    live = [InlineKeyboardButton(label, url=url) for label, url in socials if url]
+    for i in range(0, len(live), 2):
+        rows.append(live[i:i + 2])
+    return InlineKeyboardMarkup(rows)
 
 
 def _buy_caption():
     # <code> renders monospace, which is tap-to-copy on mobile Telegram.
     return (
-        "⚡ <b>BUY ZAPP</b> ⚡\n"
-        "Free Energy = Free Money ∞\n\n"
+        "⚡ <b>BUY ⚡ZAPP</b> ⚡\n"
+        "∞ Free Energy = Free Money ∞\n\n"
         "<b>Official CA</b> (tap to copy):\n"
         f"<code>{esc(CA)}</code>\n\n"
         "Tap a button below to buy, chart, or learn more.\n"
-        "3 · 6 · 9 ∞"
+        "∞ 3 · 6 · 9 ∞\n\n"
+        "⚡ZAPP"
     )
 
 
