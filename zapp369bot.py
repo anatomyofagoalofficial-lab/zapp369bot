@@ -218,7 +218,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
 )
-from telegram.constants import ChatMemberStatus, ChatType
+from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import ContextTypes
 
@@ -472,6 +472,40 @@ def build_message(template: str, *, user=None, chat=None, count=None):
 
 
 # ---------------------------------------------------------------------------
+# Resilient sending: always show the message, falling back if Telegram rejects
+# the premium custom emoji or the HTML.
+# ---------------------------------------------------------------------------
+_CE_TAG = re.compile(r"<tg-emoji[^>]*>(.*?)</tg-emoji>", re.S)
+
+
+def strip_custom_emoji(text: str) -> str:
+    """Replace <tg-emoji ...>x</tg-emoji> with its plain fallback emoji x."""
+    return _CE_TAG.sub(r"\1", text or "")
+
+
+async def safe_reply(message, text, **kwargs):
+    """
+    Reply with HTML. If Telegram rejects it (e.g. the bot can't send the premium
+    custom emoji), retry with plain emoji; if still rejected, send as plain text.
+    Guarantees the user sees something instead of silence.
+    """
+    kwargs.setdefault("parse_mode", ParseMode.HTML)
+    kwargs.setdefault("disable_web_page_preview", True)
+    try:
+        return await message.reply_text(text, **kwargs)
+    except BadRequest:
+        try:
+            return await message.reply_text(strip_custom_emoji(text), **kwargs)
+        except BadRequest:
+            plain = dict(kwargs)
+            plain.pop("parse_mode", None)
+            try:
+                return await message.reply_text(strip_custom_emoji(text), **plain)
+            except BadRequest:
+                return None
+
+
+# ---------------------------------------------------------------------------
 # Action verbs
 # ---------------------------------------------------------------------------
 async def do_action(action, chat_id, uid, context, *, seconds=None):
@@ -586,10 +620,9 @@ async def send_note(update, context, name):
             await msg.reply_document(row["file_id"], caption=text or None,
                                      parse_mode=ParseMode.HTML, reply_markup=markup)
         else:
-            await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup,
-                                 disable_web_page_preview=True)
+            await safe_reply(msg, text, reply_markup=markup)
     except BadRequest:
-        await msg.reply_text(text or "(note)", parse_mode=ParseMode.HTML)
+        await safe_reply(msg, text or "(note)")
     return True
 
 
@@ -677,10 +710,8 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = db.get_settings(target_chat(update))
     if s["rules"]:
         text, markup = build_message(s["rules"], chat=update.effective_chat)
-        await update.effective_message.reply_text(f"📜 <b>Rules</b>\n\n{text}",
-                                                  parse_mode=ParseMode.HTML,
-                                                  reply_markup=markup,
-                                                  disable_web_page_preview=True)
+        await safe_reply(update.effective_message, f"📜 <b>Rules</b>\n\n{text}",
+                         reply_markup=markup)
     else:
         await update.effective_message.reply_text("No rules set. Admins: /setrules <text>")
 
@@ -1838,9 +1869,8 @@ async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton(
                     "✅ I'm human", callback_data=f"cap:{member.id}:ok")]])
                 txt, _ = build_message(s["welcome"] or DEFAULT_WELCOME, user=member, chat=chat)
-                await update.effective_message.reply_text(
-                    txt + "\n\n🤖 Tap below to unlock chat.",
-                    parse_mode=ParseMode.HTML, reply_markup=kb)
+                await safe_reply(update.effective_message,
+                                 txt + "\n\n🤖 Tap below to unlock chat.", reply_markup=kb)
             if context.job_queue:
                 context.job_queue.run_once(_kick_unverified, 120, data=(chat.id, member.id))
             continue
@@ -1850,10 +1880,8 @@ async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             txt, markup = build_message(s["welcome"] or DEFAULT_WELCOME,
                                         user=member, chat=chat,
                                         count=chat.id and None)
-            sent = await update.effective_message.reply_text(
-                txt, parse_mode=ParseMode.HTML, reply_markup=markup,
-                disable_web_page_preview=True)
-            if s["clean_welcome"] and context.job_queue:
+            sent = await safe_reply(update.effective_message, txt, reply_markup=markup)
+            if s["clean_welcome"] and sent and context.job_queue:
                 context.job_queue.run_once(
                     lambda c, cid=chat.id, mid=sent.message_id:
                         c.bot.delete_message(cid, mid), 120)
@@ -1871,8 +1899,7 @@ async def on_left_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if s["goodbye_on"] and member and member.id != context.bot.id:
         txt, markup = build_message(s["goodbye"] or "👋 {first} left the group.",
                                     user=member, chat=chat)
-        await update.effective_message.reply_text(txt, parse_mode=ParseMode.HTML,
-                                                  reply_markup=markup)
+        await safe_reply(update.effective_message, txt, reply_markup=markup)
 
 
 async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2254,8 +2281,7 @@ async def _run_filters(update, msg, chat_id):
     for r in db.query("SELECT keyword,reply FROM filters WHERE chat_id=?", (chat_id,)):
         kw = r["keyword"]
         if (" " in kw and kw in low) or (kw in words):
-            await msg.reply_text(r["reply"], parse_mode=ParseMode.HTML,
-                                 disable_web_page_preview=True)
+            await safe_reply(msg, r["reply"])
             return
 
 
