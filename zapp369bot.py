@@ -375,26 +375,61 @@ def target_chat(update: Update):
 # ---------------------------------------------------------------------------
 # Target user resolution
 # ---------------------------------------------------------------------------
+def _lookup_username(chat_id, uname):
+    """Find a user_id in this chat's points table by @username (case-insensitive).
+    Reliable because the bot records everyone who chats. Returns (uid, name) or None."""
+    uname = uname.lstrip("@").lower()
+    if not uname:
+        return None
+    rows = db.query(
+        "SELECT user_id,name,username FROM points WHERE chat_id=? AND lower(username)=?",
+        (chat_id, uname))
+    if rows:
+        r = rows[0]
+        return r["user_id"], (r["name"] or f"@{r['username']}")
+    return None
+
+
 async def resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Return (user_id, display_html) for the user a command targets, or (None, None)."""
     msg = update.effective_message
+    chat_id = msg.chat.id if msg and msg.chat else None
+    # 1) reply to a message — the most reliable target
     if msg.reply_to_message and msg.reply_to_message.from_user:
         u = msg.reply_to_message.from_user
         return u.id, mention(u)
-    # text_mention entity in args
+    # 2) text_mention entity (a tap-mention of someone with no username) carries the user
     for ent in (msg.entities or []):
         if ent.type == "text_mention" and ent.user:
             return ent.user.id, mention(ent.user)
+    # 3) @username mention entity -> resolve from the bot's DB (who has chatted)
+    text = msg.text or msg.caption or ""
+    for ent in (msg.entities or []):
+        if ent.type == "mention":
+            uname = text[ent.offset:ent.offset + ent.length]
+            found = _lookup_username(chat_id, uname) if chat_id else None
+            if found:
+                return found[0], mention_id(found[0], found[1])
+            # fall back to Telegram's resolver (works only for some accounts)
+            try:
+                c = await context.bot.get_chat(uname)
+                return c.id, mention(c)
+            except (BadRequest, Forbidden, AttributeError):
+                return None, None
+    # 4) explicit numeric id or @name passed as the first arg
     if context.args:
         arg = context.args[0]
         if arg.lstrip("-").isdigit():
             uid = int(arg)
             return uid, mention_id(uid)
         if arg.startswith("@"):
+            found = _lookup_username(chat_id, arg) if chat_id else None
+            if found:
+                return found[0], mention_id(found[0], found[1])
             try:
-                chat = await context.bot.get_chat(arg)
-                return chat.id, mention(chat)
-            except BadRequest:
+                c = await context.bot.get_chat(arg)
+                return c.id, mention(c)
+            except (BadRequest, Forbidden, AttributeError):
                 return None, None
     return None, None
 
@@ -1163,9 +1198,10 @@ def _short_usd(n):
 
 def _price_keyboard():
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪐 Jupiter", url=JUPITER),
+         InlineKeyboardButton("💊 pump.fun", url=PUMPFUN)],
         [InlineKeyboardButton("📊 Chart", url=CHART),
-         InlineKeyboardButton("🪐 Buy", url=JUPITER)],
-        [InlineKeyboardButton("🔄 Refresh", callback_data="zapp_price")],
+         InlineKeyboardButton("🔄 Refresh", callback_data="zapp_price")],
     ])
 
 
@@ -1242,10 +1278,24 @@ async def price_refresh_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 _PRICE_TRIGGERS = {"price", "mc", "marketcap", "market cap", "stats", "price?"}
+_WP_TRIGGERS = {"whitepaper", "wp", "white paper", "litepaper", "paper"}
 
 
-async def price_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reply with live price when someone just types 'price' / 'mc'."""
+def _wp_keyboard():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📄 Read the Whitepaper", url=WHITEPAPER)]])
+
+
+async def whitepaper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """One clean button to the ZAPP whitepaper."""
+    await update.effective_message.reply_text(
+        "📄 <b>ZAPP Whitepaper</b>\n∞ 3 · 6 · 9 ∞",
+        parse_mode=ParseMode.HTML, reply_markup=_wp_keyboard(),
+        disable_web_page_preview=True)
+
+
+async def keyword_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply when someone types 'price'/'mc' or 'whitepaper'/'wp' on its own."""
     msg = update.effective_message
     if not msg or not msg.text:
         return
@@ -1256,6 +1306,11 @@ async def price_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(text, parse_mode=ParseMode.HTML,
                                  reply_markup=_price_keyboard(),
                                  disable_web_page_preview=True)
+    elif cleaned in _WP_TRIGGERS:
+        await msg.reply_text(
+            "📄 <b>ZAPP Whitepaper</b>\n∞ 3 · 6 · 9 ∞",
+            parse_mode=ParseMode.HTML, reply_markup=_wp_keyboard(),
+            disable_web_page_preview=True)
 
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1304,13 +1359,14 @@ def register_buy(app):
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler(["ca", "contract"], ca))
     app.add_handler(CommandHandler(["price", "mc", "marketcap", "stats"], price))
+    app.add_handler(CommandHandler(["whitepaper", "wp", "paper"], whitepaper))
     app.add_handler(CommandHandler("setbuyimage", setbuyimage))
     app.add_handler(CommandHandler("delbuyimage", delbuyimage))
     app.add_handler(CallbackQueryHandler(price_refresh_cb, pattern="^zapp_price$"))
-    # typed "price"/"mc" (no slash) -> live price. Own group so it runs alongside
+    # typed "price"/"mc"/"whitepaper" (no slash). Own group so it runs alongside
     # the moderation watcher (group 0) and points tracker (group 2).
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, price_keyword), group=3)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, keyword_router), group=3)
 
 
 # ===========================================================================
@@ -3339,6 +3395,7 @@ async def _post_init(app):
             ("buy", "How to buy ZAPP (CA + links)"),
             ("price", "Live ZAPP price"),
             ("ca", "Official contract address"),
+            ("whitepaper", "ZAPP whitepaper"),
             ("top", "Points leaderboard"),
             ("points", "Check your points"),
             ("rules", "Show the group rules"),
