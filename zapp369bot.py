@@ -118,6 +118,13 @@ def init_db():
                 chat_id INTEGER, keyword TEXT, reply TEXT,
                 PRIMARY KEY (chat_id, keyword)
             );
+            CREATE TABLE IF NOT EXISTS points (
+                chat_id INTEGER, user_id INTEGER,
+                points INTEGER DEFAULT 0,
+                name TEXT, username TEXT,
+                last_award TEXT, streak INTEGER DEFAULT 0,
+                PRIMARY KEY (chat_id, user_id)
+            );
             CREATE TABLE IF NOT EXISTS locks (
                 chat_id INTEGER, lock_type TEXT,
                 PRIMARY KEY (chat_id, lock_type)
@@ -162,6 +169,12 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN rules_entities TEXT",
             "ALTER TABLE settings ADD COLUMN welcome_entities TEXT",
             "ALTER TABLE settings ADD COLUMN buy_image TEXT",
+            "ALTER TABLE settings ADD COLUMN points_on INTEGER DEFAULT 1",
+            "ALTER TABLE settings ADD COLUMN points_daily INTEGER DEFAULT 10",
+            "ALTER TABLE settings ADD COLUMN welcome_image TEXT",
+            "ALTER TABLE settings ADD COLUMN welcome_image_type TEXT DEFAULT 'photo'",
+            "ALTER TABLE settings ADD COLUMN about TEXT",
+            "ALTER TABLE settings ADD COLUMN about_entities TEXT",
         ):
             try:
                 c.execute(stmt)
@@ -847,6 +860,52 @@ async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          reply_markup=markup)
 
 
+# --------------------------- ABOUT / LORE ----------------------------------
+DEFAULT_ABOUT = (
+    "⚡ <b>ZAPP — Tesla's Revolution</b> ⚡\n\n"
+    "Money is energy. Energy moves at the speed of light — so why does money still "
+    "crawl through banks, borders and fees?\n\n"
+    "A century ago Nikola Tesla built a tower to give the world free energy. "
+    "They pulled the funding and the signal went quiet. <b>⚡ZAPP is that signal, "
+    "switched back on</b> — built on Solana, owned by no one, open to everyone.\n\n"
+    "<b>Free Energy = Free Money ∞</b>\n"
+    "• 0% tax · LP burned · community-owned\n"
+    "• Built on the 3 · 6 · 9 frequency\n\n"
+    "🌐 zapp369.energy\n"
+    "𝕏 x.com/ZAPPonSOL\n"
+    "💬 t.me/ZAPP369\n\n"
+    "Type /buy to join the current. ⚡ 3 · 6 · 9 ∞"
+)
+
+
+@group_only
+@admin_only
+async def setabout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    body, ents = capture_rich(update.effective_message, 1)
+    if not body:
+        await update.effective_message.reply_text("Usage: /setabout <your About text>")
+        return
+    chat_id = target_chat(update)
+    db.set_setting(chat_id, "about", body)
+    db.set_setting(chat_id, "about_entities", json.dumps(ents) if ents else None)
+    await update.effective_message.reply_text("✅ About saved.")
+
+
+@group_only
+async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    s = db.get_settings(target_chat(update))
+    about_text = s["about"] if "about" in s.keys() else None
+    if not about_text:
+        await safe_reply(update.effective_message, DEFAULT_ABOUT)
+        return
+    raw_ents = s["about_entities"] if "about_entities" in s.keys() else None
+    if raw_ents:
+        await reply_rich(update.effective_message, about_text,
+                         build_entities(json.loads(raw_ents)))
+    else:
+        await safe_reply(update.effective_message, about_text)
+
+
 # --------------------------- BLOCKLIST -------------------------------------
 @group_only
 @admin_only
@@ -906,6 +965,8 @@ def register_content(app):
     app.add_handler(CommandHandler("stop", stop_filter))
     app.add_handler(CommandHandler("setrules", setrules))
     app.add_handler(CommandHandler("rules", rules))
+    app.add_handler(CommandHandler("setabout", setabout))
+    app.add_handler(CommandHandler("about", about))
     app.add_handler(CommandHandler(["addblocklist", "blocklist"], add_blocklist))
     app.add_handler(CommandHandler("blocklists", list_blocklist))
     app.add_handler(CommandHandler(["unblocklist", "rmblocklist"], rm_blocklist))
@@ -1008,6 +1069,278 @@ def register_buy(app):
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("setbuyimage", setbuyimage))
     app.add_handler(CommandHandler("delbuyimage", delbuyimage))
+
+
+# ===========================================================================
+# ---- points ------------------------------------------------------------
+# ===========================================================================
+
+"""
+⚡ ZAPP Points & Leaderboard — gamified engagement.
+
+- Members earn points automatically for showing up each day (daily bonus + streak).
+- Admins can award/remove points by hand: /addpoints @user 300
+- /points shows your score, rank, streak and ZAPP rank-title.
+- /top shows the leaderboard.
+
+Points are an internal score only — not crypto, not on-chain. What (if anything)
+they unlock is up to the team.
+"""
+from datetime import datetime, timezone, timedelta
+
+from telegram import Update
+from telegram.constants import ParseMode, ChatType
+from telegram.ext import CommandHandler, MessageHandler, ContextTypes, filters
+
+
+# ZAPP rank tiers (threshold -> title)
+TIERS = [
+    (3690, "⚡ Tesla Tier"),
+    (1000, "⚡ Super Conductor"),
+    (369,  "⚡ Conductor"),
+    (100,  "⚡ Charged"),
+    (36,   "⚡ Spark"),
+    (0,    "🔌 Plugged In"),
+]
+
+
+def _title(pts):
+    for thr, name in TIERS:
+        if pts >= thr:
+            return name
+    return TIERS[-1][1]
+
+
+def _today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _yesterday():
+    return (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _row(chat_id, uid):
+    return db.query("SELECT * FROM points WHERE chat_id=? AND user_id=?",
+                    (chat_id, uid), one=True)
+
+
+def _rank(chat_id, uid):
+    row = _row(chat_id, uid)
+    if not row:
+        return None, 0
+    higher = db.query("SELECT COUNT(*) c FROM points WHERE chat_id=? AND points>?",
+                      (chat_id, row["points"]), one=True)["c"]
+    return higher + 1, row["points"]
+
+
+# --------------------------- auto daily award ------------------------------
+async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Runs on every group message (separate handler group). Daily bonus + streak."""
+    if not update.effective_message or update.effective_chat.type == ChatType.PRIVATE:
+        return
+    user = update.effective_user
+    if not user or user.is_bot:
+        return
+    chat_id = update.effective_chat.id
+    s = db.get_settings(chat_id)
+    name = user.first_name or "user"
+    uname = user.username or ""
+    row = _row(chat_id, user.id)
+    today = _today()
+    points_on = bool(s["points_on"])
+    if row is None:
+        # always record the member (for /all); seed daily points only if enabled
+        db.execute(
+            "INSERT INTO points (chat_id,user_id,points,name,username,last_award,streak) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (chat_id, user.id, s["points_daily"] if points_on else 0, name, uname,
+             today if points_on else None, 1 if points_on else 0))
+        return
+    if not points_on or row["last_award"] == today:
+        # already earned today (or points off) — just refresh the cached name
+        db.execute("UPDATE points SET name=?,username=? WHERE chat_id=? AND user_id=?",
+                   (name, uname, chat_id, user.id))
+        return
+    streak = (row["streak"] or 0) + 1 if row["last_award"] == _yesterday() else 1
+    db.execute(
+        "UPDATE points SET points=points+?,name=?,username=?,last_award=?,streak=? "
+        "WHERE chat_id=? AND user_id=?",
+        (s["points_daily"], name, uname, today, streak, chat_id, user.id))
+
+
+# --------------------------- /points ---------------------------------------
+@group_only
+async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    uid, disp = await resolve_target(update, context)
+    if uid is None:
+        uid = update.effective_user.id
+        disp = mention_id(uid, update.effective_user.first_name)
+    rank, pts = _rank(chat_id, uid)
+    row = _row(chat_id, uid)
+    if row is None:
+        await update.effective_message.reply_text(
+            f"{disp} has no points yet — send a message to start earning. ⚡",
+            parse_mode=ParseMode.HTML)
+        return
+    streak = row["streak"] or 0
+    streak_line = f"\n🔥 <b>{streak}-day</b> streak" if streak > 1 else ""
+    await update.effective_message.reply_text(
+        f"{disp}\n"
+        f"⚡ <b>{pts:,}</b> points  ·  rank <b>#{rank}</b>\n"
+        f"{_title(pts)}{streak_line}",
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+# --------------------------- /top ------------------------------------------
+@group_only
+async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    rows = db.query(
+        "SELECT user_id,points,name FROM points WHERE chat_id=? AND points>0 "
+        "ORDER BY points DESC LIMIT 10", (chat_id,))
+    if not rows:
+        await update.effective_message.reply_text(
+            "No points yet — start chatting to climb the board. ⚡")
+        return
+    medals = ["🥇", "🥈", "🥉"] + ["⚡"] * 7
+    lines = []
+    for i, r in enumerate(rows):
+        who = mention_id(r["user_id"], r["name"])
+        lines.append(f"{medals[i]} {who} — <b>{r['points']:,}</b>")
+    await update.effective_message.reply_text(
+        "🏆 <b>ZAPP Leaderboard</b>\n\n" + "\n".join(lines),
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+# --------------------------- admin: add / set / reset ----------------------
+def _amount(context, skip_first):
+    args = list(context.args)
+    if skip_first and args:
+        args = args[1:]
+    for a in args:
+        if a.lstrip("-").isdigit():
+            return int(a)
+    return None
+
+
+@group_only
+@admin_only
+async def addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    chat_id = target_chat(update)
+    uid, disp = await resolve_target(update, context)
+    if uid is None:
+        await msg.reply_text("Reply to someone (or @mention) with an amount:\n"
+                             "/addpoints @user 300   (use a minus to remove)")
+        return
+    amt = _amount(context, skip_first=not msg.reply_to_message)
+    if amt is None:
+        await msg.reply_text("How many? e.g. /addpoints @user 300")
+        return
+    row = _row(chat_id, uid)
+    if row is None:
+        db.execute("INSERT INTO points (chat_id,user_id,points,name) VALUES (?,?,?,?)",
+                   (chat_id, uid, max(amt, 0), None))
+        new = max(amt, 0)
+    else:
+        new = max((row["points"] or 0) + amt, 0)
+        db.execute("UPDATE points SET points=? WHERE chat_id=? AND user_id=?",
+                   (new, chat_id, uid))
+    verb = "added to" if amt >= 0 else "removed from"
+    await msg.reply_text(
+        f"✅ <b>{abs(amt):,}</b> points {verb} {disp}.\nNew total: <b>{new:,}</b> ⚡",
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+@group_only
+@admin_only
+async def setpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    chat_id = target_chat(update)
+    uid, disp = await resolve_target(update, context)
+    amt = _amount(context, skip_first=not msg.reply_to_message)
+    if uid is None or amt is None:
+        await msg.reply_text("Usage: /setpoints @user 1000  (sets their exact total)")
+        return
+    amt = max(amt, 0)
+    if _row(chat_id, uid) is None:
+        db.execute("INSERT INTO points (chat_id,user_id,points) VALUES (?,?,?)",
+                   (chat_id, uid, amt))
+    else:
+        db.execute("UPDATE points SET points=? WHERE chat_id=? AND user_id=?",
+                   (amt, chat_id, uid))
+    await msg.reply_text(f"✅ {disp} now has <b>{amt:,}</b> points. ⚡",
+                         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+@group_only
+@admin_only
+async def resetpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    if context.args and context.args[0].lower() == "all":
+        db.execute("DELETE FROM points WHERE chat_id=?", (chat_id,))
+        await update.effective_message.reply_text("🧹 All points reset to zero.")
+        return
+    uid, disp = await resolve_target(update, context)
+    if uid is None:
+        await update.effective_message.reply_text(
+            "Usage: /resetpoints all   — or reply to one member to zero just them.")
+        return
+    db.execute("DELETE FROM points WHERE chat_id=? AND user_id=?", (chat_id, uid))
+    await update.effective_message.reply_text(f"🧹 Reset {disp} to zero.",
+                                              parse_mode=ParseMode.HTML)
+
+
+@group_only
+@admin_only
+async def setdaily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args or not context.args[0].lstrip("-").isdigit():
+        await update.effective_message.reply_text(
+            "Usage: /setdailypoints 10   (points each member earns per active day; 0 = off)")
+        return
+    val = max(int(context.args[0]), 0)
+    db.set_setting(target_chat(update), "points_daily", val)
+    db.set_setting(target_chat(update), "points_on", 1 if val > 0 else 0)
+    state = f"{val} points/day" if val else "off"
+    await update.effective_message.reply_text(f"✅ Daily points: {state}.")
+
+
+@group_only
+@admin_only
+async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    rows = db.query("SELECT user_id,name FROM points WHERE chat_id=? ORDER BY points DESC",
+                    (chat_id,))
+    if not rows:
+        await update.effective_message.reply_text(
+            "I haven't seen anyone chat yet, so there's no one to tag. "
+            "Once members start talking I'll remember them. ⚡")
+        return
+    note = update.effective_message.text.partition(" ")[2].strip() or "📣 Attention ⚡ZAPP fam!"
+    mentions = [mention_id(r["user_id"], r["name"] or "member") for r in rows][:200]
+    CHUNK = 20
+    first = True
+    for i in range(0, len(mentions), CHUNK):
+        part = " ".join(mentions[i:i + CHUNK])
+        text = (f"{esc(note)}\n\n{part}") if first else part
+        await update.effective_message.reply_text(
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        first = False
+
+
+def register_points(app):
+    app.add_handler(CommandHandler(["points", "p", "rank"], points))
+    app.add_handler(CommandHandler(["top", "leaderboard", "lb"], top))
+    app.add_handler(CommandHandler(["addpoints", "givepoints"], addpoints))
+    app.add_handler(CommandHandler("setpoints", setpoints))
+    app.add_handler(CommandHandler("resetpoints", resetpoints))
+    app.add_handler(CommandHandler(["setdailypoints", "setdaily"], setdaily))
+    app.add_handler(CommandHandler(["all", "tagall", "everyone", "mentionall"], tag_all))
+    # passive daily-award tracker runs in its own handler group so it never
+    # interferes with the moderation watcher (group 0)
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS & ~filters.StatusUpdate.ALL, activity), group=2)
 
 
 # ===========================================================================
@@ -1238,9 +1571,11 @@ HELP_TEXT = (
     "<code>/setwelcome /welcome /setgoodbye /goodbye /cleanservice /captcha</code>\n"
     "Placeholders: {name} {first} {username} {id} {group} — buttons via [Txt](buttonurl://link)\n\n"
     "<b>📝 Content</b>\n"
-    "<code>/save /get /notes /clear</code> (or <code>#note</code>)  •  <code>/filter /filters /stop</code>  •  <code>/setrules /rules</code>\n\n"
+    "<code>/save /get /notes /clear</code> (or <code>#note</code>)  •  <code>/filter /filters /stop</code>  •  <code>/setrules /rules</code>  •  <code>/about /setabout</code>\n\n"
     "<b>⚡ Token</b>\n"
     "<code>/buy</code> — buy card (CA + buttons)  •  <code>/setbuyimage</code> (reply to a photo)  •  <code>/delbuyimage</code>\n\n"
+    "<b>🏆 Points</b>\n"
+    "<code>/points /top</code>  •  <code>/all</code> (tag everyone)  •  admins: <code>/addpoints @user 300</code> · <code>/setpoints</code> · <code>/resetpoints</code> · <code>/setdailypoints</code>\n\n"
     "<b>🔒 Protection</b>\n"
     "<code>/lock /unlock /locks</code>  •  <code>/setflood /flood</code>  •  <code>/antiraid</code>  •  <code>/nightmode</code>\n"
     "<code>/addblocklist /blocklists /unblocklist /blocklistaction</code>\n\n"
@@ -1956,7 +2291,7 @@ from telegram import (
     Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup,
 )
 from telegram.constants import ParseMode, ChatMemberStatus
-from telegram.error import BadRequest
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters,
 )
@@ -2058,19 +2393,52 @@ def _welcome_repls(member, chat):
     ]
 
 
+async def _send_media(message, kind, fid, text, entities, reply_markup):
+    """Send the welcome as a photo / GIF / video, preserving caption formatting."""
+    kw = dict(caption=text, reply_markup=reply_markup)
+    if entities is not None:
+        kw["caption_entities"] = entities or None
+    else:
+        kw["parse_mode"] = ParseMode.HTML
+    try:
+        if kind == "animation":
+            return await message.reply_animation(fid, **kw)
+        if kind == "video":
+            return await message.reply_video(fid, **kw)
+        return await message.reply_photo(fid, **kw)
+    except BadRequest:
+        return None
+
+
 async def _send_welcome(message, settings, member, chat, extra="", reply_markup=None):
-    """Send the welcome preserving premium emoji if entities were stored."""
+    """Send the welcome. Uses a photo/GIF/video if one is set; preserves premium
+    emoji via stored entities; always falls back gracefully to plain text."""
+    img = settings["welcome_image"] if "welcome_image" in settings.keys() else None
+    kind = (settings["welcome_image_type"] if "welcome_image_type" in settings.keys()
+            else None) or "photo"
     raw = settings["welcome_entities"] if "welcome_entities" in settings.keys() else None
+
     if raw and settings["welcome"]:
         text, ents = substitute_entities(settings["welcome"], json.loads(raw),
                                          _welcome_repls(member, chat))
         if extra:
             text = text + extra
-        return await reply_rich(message, text, build_entities(ents), reply_markup=reply_markup)
+        entities = build_entities(ents)
+        if img:
+            sent = await _send_media(message, kind, img, text, entities, reply_markup)
+            if sent:
+                return sent
+        return await reply_rich(message, text, entities, reply_markup=reply_markup)
+
     txt, markup = build_message(settings["welcome"] or DEFAULT_WELCOME, user=member, chat=chat)
     if extra:
         txt = txt + extra
-    return await safe_reply(message, txt, reply_markup=reply_markup or markup)
+    rm = reply_markup or markup
+    if img:
+        sent = await _send_media(message, kind, img, txt, None, rm)
+        if sent:
+            return sent
+    return await safe_reply(message, txt, reply_markup=rm)
 
 
 async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2184,6 +2552,79 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @group_only
 @admin_only
+async def setwelcomeimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    reply = msg.reply_to_message
+    fid = kind = None
+    if reply:
+        if reply.animation:
+            fid, kind = reply.animation.file_id, "animation"
+        elif reply.video:
+            fid, kind = reply.video.file_id, "video"
+        elif reply.photo:
+            fid, kind = reply.photo[-1].file_id, "photo"
+    if not fid:
+        await msg.reply_text(
+            "Reply to a photo, GIF, or video with /setwelcomeimage to show it on every welcome.")
+        return
+    db.set_setting(target_chat(update), "welcome_image", fid)
+    db.set_setting(target_chat(update), "welcome_image_type", kind)
+    label = {"animation": "GIF", "video": "video"}.get(kind, "image")
+    await msg.reply_text(f"✅ Welcome {label} set. Use /testwelcome to preview.")
+
+
+@group_only
+@admin_only
+async def delwelcomeimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db.set_setting(target_chat(update), "welcome_image", None)
+    await update.effective_message.reply_text(
+        "🗑 Welcome media removed. Welcomes will be text-only again.")
+
+
+# topic icon colours Telegram accepts
+_TOPIC_COLORS = [0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]
+_ZAPP_TOPICS = [
+    "⚡ Announcements", "💬 General Chat", "😂 Memes", "🛒 How to Buy",
+    "📊 Charts & Buys", "📣 Social Media", "📖 About ZAPP",
+]
+
+
+@group_only
+@admin_only
+async def setup_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if getattr(chat, "type", None) == "private":
+        await update.effective_message.reply_text("Run /setuptopics inside the group.")
+        return
+    if not getattr(chat, "is_forum", False):
+        await update.effective_message.reply_text(
+            "First turn Topics on (one-time):\n"
+            "Open the group → Edit (pencil) → toggle <b>Topics</b> on.\n"
+            "Then run /setuptopics again and I'll create all the sections. ⚡",
+            parse_mode=ParseMode.HTML)
+        return
+    created, failed = [], []
+    for i, name in enumerate(_ZAPP_TOPICS):
+        try:
+            await context.bot.create_forum_topic(
+                chat.id, name=name, icon_color=_TOPIC_COLORS[i % len(_TOPIC_COLORS)])
+            created.append(name)
+        except Forbidden:
+            await update.effective_message.reply_text(
+                "🚫 I need the <b>Manage Topics</b> admin permission. Give me that, "
+                "then run /setuptopics again.", parse_mode=ParseMode.HTML)
+            return
+        except BadRequest:
+            failed.append(name)
+    txt = "✅ Created: " + ", ".join(created) if created else "No topics created."
+    if failed:
+        txt += "\n⚠️ Skipped (maybe already exist): " + ", ".join(failed)
+    txt += "\n\nTip: run this only once — running again makes duplicates."
+    await update.effective_message.reply_text(txt)
+
+
+@group_only
+@admin_only
 async def test_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Preview the welcome message, using the admin who ran it as the 'new member'."""
     chat = update.effective_chat
@@ -2194,6 +2635,9 @@ async def test_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register_greetings(app):
     app.add_handler(CommandHandler("setwelcome", setwelcome))
+    app.add_handler(CommandHandler(["setwelcomeimage", "setwelcomepic", "setwelcomegif"], setwelcomeimage))
+    app.add_handler(CommandHandler(["delwelcomeimage", "delwelcomepic"], delwelcomeimage))
+    app.add_handler(CommandHandler(["setuptopics", "createtopics"], setup_topics))
     app.add_handler(CommandHandler(["testwelcome", "welcometest", "previewwelcome"], test_welcome))
     app.add_handler(CommandHandler("welcome", _toggle("welcome_on")))
     app.add_handler(CommandHandler("setgoodbye", setgoodbye))
@@ -2576,6 +3020,8 @@ async def _post_init(app):
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
             ("buy", "How to buy ZAPP (CA + links)"),
+            ("top", "Points leaderboard"),
+            ("points", "Check your points"),
             ("rules", "Show the group rules"),
             ("report", "Report a message to admins"),
             ("afk", "Set yourself away"),
@@ -2594,6 +3040,7 @@ def main():
     register_greetings(app)
     register_content(app)
     register_buy(app)
+    register_points(app)
     register_protection(app)
     register_federation(app)
     register_watcher(app)
