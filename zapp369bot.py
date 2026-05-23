@@ -99,7 +99,8 @@ def init_db():
                 nightmode_start TEXT DEFAULT '23:00',
                 nightmode_end TEXT DEFAULT '07:00',
                 log_channel INTEGER,
-                rules_entities TEXT
+                rules_entities TEXT,
+                welcome_entities TEXT
             );
             CREATE TABLE IF NOT EXISTS warns (
                 chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
@@ -157,7 +158,10 @@ def init_db():
             """
         )
         # migrations for existing databases (ignore if column already present)
-        for stmt in ("ALTER TABLE settings ADD COLUMN rules_entities TEXT",):
+        for stmt in (
+            "ALTER TABLE settings ADD COLUMN rules_entities TEXT",
+            "ALTER TABLE settings ADD COLUMN welcome_entities TEXT",
+        ):
             try:
                 c.execute(stmt)
             except sqlite3.OperationalError:
@@ -224,7 +228,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity, User,
 )
 from telegram.constants import ChatMemberStatus, ChatType, ParseMode
 from telegram.error import BadRequest, Forbidden
@@ -440,10 +444,16 @@ def capture_rich(message, ntokens=1):
 
 
 def build_entities(items):
-    """Rebuild MessageEntity objects from stored dicts."""
+    """Rebuild MessageEntity objects from stored dicts (incl. dynamic text_mention)."""
     out = []
     for d in (items or []):
         kw = {"type": d["type"], "offset": d["offset"], "length": d["length"]}
+        if d["type"] == "text_mention" and d.get("user_id"):
+            try:
+                kw["user"] = User(id=d["user_id"], first_name=d.get("user_name") or "user",
+                                  is_bot=False)
+            except Exception:  # noqa: BLE001
+                continue
         for attr in ("custom_emoji_id", "url", "language"):
             if d.get(attr):
                 kw[attr] = d[attr]
@@ -452,6 +462,44 @@ def build_entities(items):
         except Exception:  # noqa: BLE001
             pass
     return out
+
+
+def utf16_len(s):
+    return len(s.encode("utf-16-le")) // 2 if s else 0
+
+
+def substitute_entities(text, ent_dicts, repls):
+    """
+    Replace {placeholders} in `text` while keeping entity offsets correct.
+    repls: list of (placeholder, replacement_text, user_tuple_or_None).
+    If user_tuple is given, the replacement becomes a clickable text_mention.
+    Returns (new_text, new_entity_dicts).
+    """
+    ents = [dict(e) for e in (ent_dicts or [])]
+    for ph, repl, user in repls:
+        repl = repl or ""
+        idx = text.find(ph)
+        while idx != -1:
+            off16 = utf16_len(text[:idx])
+            ph16 = utf16_len(ph)
+            repl16 = utf16_len(repl)
+            delta = repl16 - ph16
+            new_ents = []
+            for e in ents:
+                eo, el = e["offset"], e["length"]
+                if eo + el <= off16:
+                    new_ents.append(e)                       # before placeholder
+                elif eo >= off16 + ph16:
+                    e2 = dict(e); e2["offset"] = eo + delta   # after placeholder
+                    new_ents.append(e2)
+                # else: overlaps placeholder -> drop
+            if user and repl:
+                new_ents.append({"type": "text_mention", "offset": off16, "length": repl16,
+                                 "user_id": user[0], "user_name": user[1]})
+            ents = new_ents
+            text = text[:idx] + repl + text[idx + len(ph):]
+            idx = text.find(ph, idx + len(repl))
+    return text, ents
 
 
 async def reply_rich(message, text, entities, **kwargs):
@@ -1800,6 +1848,7 @@ def register_warnings(app):
 # ===========================================================================
 
 """Welcome / goodbye / captcha / clean-service, plus the new-member entry point."""
+import json
 import time
 import random
 from telegram import (
@@ -1827,13 +1876,15 @@ _captcha_answers = {}
 @group_only
 @admin_only
 async def setwelcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.effective_message.text.partition(" ")[2].strip()
-    if not text:
+    body, ents = capture_rich(update.effective_message, 1)
+    if not body:
         await update.effective_message.reply_text(
             "Usage: /setwelcome <text>\nPlaceholders: {name} {first} {username} {id} {group} {count}\n"
             "Buttons: [Label](buttonurl://https://link.com)  (add :same to keep on one row)")
         return
-    db.set_setting(target_chat(update), "welcome", text)
+    chat_id = target_chat(update)
+    db.set_setting(chat_id, "welcome", body)
+    db.set_setting(chat_id, "welcome_entities", json.dumps(ents) if ents else None)
     await update.effective_message.reply_text("✅ Welcome message saved.")
 
 
@@ -1893,6 +1944,34 @@ async def _kick_unverified(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---- new member entry ------------------------------------------------------
+def _welcome_repls(member, chat):
+    name = member.first_name or "there"
+    uname = ("@" + member.username) if member.username else name
+    return [
+        ("{name}", name, (member.id, name)),
+        ("{first}", member.first_name or "", None),
+        ("{username}", uname, None),
+        ("{id}", str(member.id), None),
+        ("{group}", chat.title or "the group", None),
+        ("{count}", "", None),
+    ]
+
+
+async def _send_welcome(message, settings, member, chat, extra="", reply_markup=None):
+    """Send the welcome preserving premium emoji if entities were stored."""
+    raw = settings["welcome_entities"] if "welcome_entities" in settings.keys() else None
+    if raw and settings["welcome"]:
+        text, ents = substitute_entities(settings["welcome"], json.loads(raw),
+                                         _welcome_repls(member, chat))
+        if extra:
+            text = text + extra
+        return await reply_rich(message, text, build_entities(ents), reply_markup=reply_markup)
+    txt, markup = build_message(settings["welcome"] or DEFAULT_WELCOME, user=member, chat=chat)
+    if extra:
+        txt = txt + extra
+    return await safe_reply(message, txt, reply_markup=reply_markup or markup)
+
+
 async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     s = db.get_settings(chat.id)
@@ -1950,19 +2029,15 @@ async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton(
                     "✅ I'm human", callback_data=f"cap:{member.id}:ok")]])
-                txt, _ = build_message(s["welcome"] or DEFAULT_WELCOME, user=member, chat=chat)
-                await safe_reply(update.effective_message,
-                                 txt + "\n\n🤖 Tap below to unlock chat.", reply_markup=kb)
+                await _send_welcome(update.effective_message, s, member, chat,
+                                    extra="\n\n🤖 Tap below to unlock chat.", reply_markup=kb)
             if context.job_queue:
                 context.job_queue.run_once(_kick_unverified, 120, data=(chat.id, member.id))
             continue
 
         # --- normal welcome ---
         if s["welcome_on"]:
-            txt, markup = build_message(s["welcome"] or DEFAULT_WELCOME,
-                                        user=member, chat=chat,
-                                        count=chat.id and None)
-            sent = await safe_reply(update.effective_message, txt, reply_markup=markup)
+            sent = await _send_welcome(update.effective_message, s, member, chat)
             if s["clean_welcome"] and sent and context.job_queue:
                 context.job_queue.run_once(
                     lambda c, cid=chat.id, mid=sent.message_id:
@@ -2006,8 +2081,19 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _captcha_answers.pop((chat_id, target), None)
 
 
+@group_only
+@admin_only
+async def test_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Preview the welcome message, using the admin who ran it as the 'new member'."""
+    chat = update.effective_chat
+    s = db.get_settings(target_chat(update))
+    await update.effective_message.reply_text("👇 Welcome preview (this is what new members see):")
+    await _send_welcome(update.effective_message, s, update.effective_user, chat)
+
+
 def register_greetings(app):
     app.add_handler(CommandHandler("setwelcome", setwelcome))
+    app.add_handler(CommandHandler(["testwelcome", "welcometest", "previewwelcome"], test_welcome))
     app.add_handler(CommandHandler("welcome", _toggle("welcome_on")))
     app.add_handler(CommandHandler("setgoodbye", setgoodbye))
     app.add_handler(CommandHandler("goodbye", _toggle("goodbye_on")))
