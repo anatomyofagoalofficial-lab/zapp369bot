@@ -2691,11 +2691,19 @@ async def delwelcomeimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗑 Welcome media removed. Welcomes will be text-only again.")
 
 
-# topic icon colours Telegram accepts
+# topic icon colours Telegram accepts (fallback if an emoji icon isn't available)
 _TOPIC_COLORS = [0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F]
+# (topic name, preferred emoji icon) — emoji icon is used when Telegram allows it
 _ZAPP_TOPICS = [
-    "⚡ Announcements", "💬 General Chat", "😂 Memes", "🛒 How to Buy",
-    "📊 Charts & Buys", "📣 Social Media", "📖 About ZAPP",
+    ("⚡ Announcements", "📢"),
+    ("💬 General Chat", "💬"),
+    ("😂 ZAPP Memes & GIFs", "😂"),
+    ("🔥 Post Your Buys", "🔥"),
+    ("🛒 How to Buy", "🛒"),
+    ("📊 Charts & Buys", "📊"),
+    ("📣 Social Media", "📣"),
+    ("🎁 Contests & Giveaways", "🎁"),
+    ("📖 About ZAPP", "📖"),
 ]
 
 
@@ -2713,11 +2721,24 @@ async def setup_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Then run /setuptopics again and I'll create all the sections. ⚡",
             parse_mode=ParseMode.HTML)
         return
+    # try to use real emoji icons (like the cool ones MOOS has); fall back to colours
+    icon_map = {}
+    try:
+        for st in await context.bot.get_forum_topic_icon_stickers():
+            if getattr(st, "emoji", None) and st.emoji not in icon_map:
+                icon_map[st.emoji] = st.custom_emoji_id
+    except Exception:
+        icon_map = {}
     created, failed = [], []
-    for i, name in enumerate(_ZAPP_TOPICS):
+    for i, (name, emoji) in enumerate(_ZAPP_TOPICS):
+        kwargs = {"name": name}
+        custom = icon_map.get(emoji)
+        if custom:
+            kwargs["icon_custom_emoji_id"] = custom
+        else:
+            kwargs["icon_color"] = _TOPIC_COLORS[i % len(_TOPIC_COLORS)]
         try:
-            await context.bot.create_forum_topic(
-                chat.id, name=name, icon_color=_TOPIC_COLORS[i % len(_TOPIC_COLORS)])
+            await context.bot.create_forum_topic(chat.id, **kwargs)
             created.append(name)
         except Forbidden:
             await update.effective_message.reply_text(
