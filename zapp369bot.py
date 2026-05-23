@@ -190,6 +190,8 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN welcome_image_type TEXT DEFAULT 'photo'",
             "ALTER TABLE settings ADD COLUMN about TEXT",
             "ALTER TABLE settings ADD COLUMN about_entities TEXT",
+            "ALTER TABLE settings ADD COLUMN rules_image TEXT",
+            "ALTER TABLE settings ADD COLUMN rules_image_type TEXT DEFAULT 'photo'",
         ):
             try:
                 c.execute(stmt)
@@ -703,6 +705,8 @@ async def log_action(context, chat_id, text):
 # ===========================================================================
 
 """Notes, filters, rules, and blocklist."""
+import re
+import html
 import json
 from telegram import Update
 from telegram.constants import ParseMode
@@ -846,6 +850,27 @@ async def stop_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --------------------------- RULES -----------------------------------------
+async def _send_rich_media(message, kind, fid, text, entities):
+    """Send rules/notes media with a formatted caption; retry plain so the image
+    is never dropped if Telegram rejects the caption."""
+    sender = {"animation": message.reply_animation,
+              "video": message.reply_video}.get(kind, message.reply_photo)
+    kw = dict(caption=text)
+    if entities is not None:
+        kw["caption_entities"] = entities or None
+    else:
+        kw["parse_mode"] = ParseMode.HTML
+    try:
+        return await sender(fid, **kw)
+    except BadRequest:
+        pass
+    plain = html.unescape(re.sub(r"<[^>]+>", "", text))[:1024]
+    try:
+        return await sender(fid, caption=plain)
+    except BadRequest:
+        return None
+
+
 @group_only
 @admin_only
 async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -860,19 +885,57 @@ async def setrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @group_only
+@admin_only
+async def setrulesimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    reply = msg.reply_to_message
+    fid = kind = None
+    if reply:
+        if reply.animation:
+            fid, kind = reply.animation.file_id, "animation"
+        elif reply.video:
+            fid, kind = reply.video.file_id, "video"
+        elif reply.photo:
+            fid, kind = reply.photo[-1].file_id, "photo"
+    if not fid:
+        await msg.reply_text(
+            "Reply to a photo, GIF, or video with /setrulesimage to show it on /rules.")
+        return
+    db.set_setting(target_chat(update), "rules_image", fid)
+    db.set_setting(target_chat(update), "rules_image_type", kind)
+    label = {"animation": "GIF", "video": "video"}.get(kind, "image")
+    await msg.reply_text(f"✅ Rules {label} set. Type /rules to preview.")
+
+
+@group_only
+@admin_only
+async def delrulesimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db.set_setting(target_chat(update), "rules_image", None)
+    await update.effective_message.reply_text(
+        "🗑 Rules image removed. /rules will be text-only again.")
+
+
+@group_only
 async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = db.get_settings(target_chat(update))
     if not s["rules"]:
         await update.effective_message.reply_text("No rules set. Admins: /setrules <text>")
         return
+    msg = update.effective_message
+    img = s["rules_image"] if "rules_image" in s.keys() else None
+    kind = (s["rules_image_type"] if "rules_image_type" in s.keys() else None) or "photo"
     raw_ents = s["rules_entities"] if "rules_entities" in s.keys() else None
     if raw_ents:
         ents = build_entities(json.loads(raw_ents))
-        await reply_rich(update.effective_message, s["rules"], ents)
+        if img and await _send_rich_media(msg, kind, img, s["rules"], ents):
+            return
+        await reply_rich(msg, s["rules"], ents)
     else:
         text, markup = build_message(s["rules"], chat=update.effective_chat)
-        await safe_reply(update.effective_message, f"📜 <b>Rules</b>\n\n{text}",
-                         reply_markup=markup)
+        full = f"📜 <b>Rules</b>\n\n{text}"
+        if img and await _send_rich_media(msg, kind, img, full, None):
+            return
+        await safe_reply(msg, full, reply_markup=markup)
 
 
 # --------------------------- ABOUT / LORE ----------------------------------
@@ -979,6 +1042,8 @@ def register_content(app):
     app.add_handler(CommandHandler("filters", list_filters))
     app.add_handler(CommandHandler("stop", stop_filter))
     app.add_handler(CommandHandler("setrules", setrules))
+    app.add_handler(CommandHandler(["setrulesimage", "setrulespic"], setrulesimage))
+    app.add_handler(CommandHandler(["delrulesimage", "delrulespic"], delrulesimage))
     app.add_handler(CommandHandler("rules", rules))
     app.add_handler(CommandHandler("setabout", setabout))
     app.add_handler(CommandHandler("about", about))
@@ -2318,6 +2383,8 @@ def register_warnings(app):
 # ===========================================================================
 
 """Welcome / goodbye / captcha / clean-service, plus the new-member entry point."""
+import re
+import html
 import json
 import time
 import random
@@ -2428,18 +2495,27 @@ def _welcome_repls(member, chat):
 
 
 async def _send_media(message, kind, fid, text, entities, reply_markup):
-    """Send the welcome as a photo / GIF / video, preserving caption formatting."""
+    """Send the welcome as a photo / GIF / video. If Telegram rejects the
+    formatted caption (e.g. URL/emoji entities on a media caption), retry with a
+    plain caption so the IMAGE still shows instead of dropping to text-only."""
+    sender = {
+        "animation": message.reply_animation,
+        "video": message.reply_video,
+    }.get(kind, message.reply_photo)
+    # attempt 1 — formatted caption
     kw = dict(caption=text, reply_markup=reply_markup)
     if entities is not None:
         kw["caption_entities"] = entities or None
     else:
         kw["parse_mode"] = ParseMode.HTML
     try:
-        if kind == "animation":
-            return await message.reply_animation(fid, **kw)
-        if kind == "video":
-            return await message.reply_video(fid, **kw)
-        return await message.reply_photo(fid, **kw)
+        return await sender(fid, **kw)
+    except BadRequest:
+        pass
+    # attempt 2 — plain caption (links auto-detect; keeps the picture)
+    plain = html.unescape(re.sub(r"<[^>]+>", "", text))[:1024]
+    try:
+        return await sender(fid, caption=plain, reply_markup=reply_markup)
     except BadRequest:
         return None
 
