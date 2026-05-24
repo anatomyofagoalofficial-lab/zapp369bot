@@ -1119,6 +1119,11 @@ INSTAGRAM = "https://www.instagram.com/zapp369.energy/"
 CHART = f"https://dexscreener.com/solana/{CA}"
 JUPITER = f"https://jup.ag/tokens/{CA}"
 PUMPFUN = f"https://pump.fun/coin/{CA}"
+# Phantom buy link (with project referral — earns fees)
+PHANTOM = f"https://phantom.com/tokens/solana/{CA}?referralId=k31pepyasnt"
+# Trusted Solana trading bots (official links). They handle wallets/keys, not us.
+BONKBOT = "https://t.me/solana_bonkbot"
+TROJAN = "https://t.me/solana_trojanbot"
 # TODO: add TikTok and Discord URLs when provided
 TIKTOK = ""
 DISCORD = ""
@@ -1128,6 +1133,7 @@ def _buy_keyboard():
     rows = [
         [InlineKeyboardButton("🪐 Buy on Jupiter", url=JUPITER),
          InlineKeyboardButton("💊 Buy on pump.fun", url=PUMPFUN)],
+        [InlineKeyboardButton("👻 Buy on Phantom", url=PHANTOM)],
         [InlineKeyboardButton("📊 Chart", url=CHART),
          InlineKeyboardButton("📖 How to Buy", url=HOWTOBUY)],
         [InlineKeyboardButton("🌐 Website", url=WEBSITE),
@@ -1173,6 +1179,32 @@ async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send just the contract address, tap-to-copy (slash command)."""
     await update.effective_message.reply_text(
         _ca_text(), parse_mode=ParseMode.HTML, reply_markup=_buy_keyboard(),
+        disable_web_page_preview=True)
+
+
+def _trade_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤖 BonkBot", url=BONKBOT),
+         InlineKeyboardButton("🦅 Trojan", url=TROJAN)],
+        [InlineKeyboardButton("👻 Phantom", url=PHANTOM),
+         InlineKeyboardButton("🪐 Jupiter", url=JUPITER)],
+        [InlineKeyboardButton("💊 pump.fun", url=PUMPFUN)],
+    ])
+
+
+async def trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Buy ⚡ZAPP directly inside Telegram via trusted trading bots."""
+    await update.effective_message.reply_text(
+        "🤖 <b>Buy ⚡ZAPP inside Telegram</b>\n\n"
+        "1️⃣ Copy the CA below\n"
+        "2️⃣ Open BonkBot or Trojan\n"
+        "3️⃣ Paste the CA, pick an amount, buy ⚡\n\n"
+        "<b>CA</b> (tap to copy):\n"
+        f"<code>{esc(CA)}</code>\n\n"
+        "⚠️ Use ONLY the official buttons below. These bots make a wallet you fund "
+        "with SOL — never share your seed phrase, and verify the CA matches before "
+        "you buy. Admins NEVER DM first.\n\n∞ 3 · 6 · 9 ∞\n⚡ZAPP",
+        parse_mode=ParseMode.HTML, reply_markup=_trade_keyboard(),
         disable_web_page_preview=True)
 
 
@@ -1358,7 +1390,8 @@ async def delbuyimage(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_buy(app):
     app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler(["ca", "contract"], ca))
-    app.add_handler(CommandHandler(["price", "mc", "marketcap", "stats"], price))
+    app.add_handler(CommandHandler(["price", "mc", "marketcap"], price))
+    app.add_handler(CommandHandler(["trade", "buybot", "buyhere"], trade))
     app.add_handler(CommandHandler(["whitepaper", "wp", "paper"], whitepaper))
     app.add_handler(CommandHandler("setbuyimage", setbuyimage))
     app.add_handler(CommandHandler("delbuyimage", delbuyimage))
@@ -3206,6 +3239,196 @@ def reschedule_all(app):
 
 
 # ===========================================================================
+# ---- powerpack ------------------------------------------------------------
+# ===========================================================================
+
+"""
+ZAPP Power Pack — high-value community commands that build on the existing
+modules. Kept in its own file so nothing else can break.
+
+Adds:
+  /godmode [on|off]        one-tap max security (captcha+antiraid+flood+locks+blocklist)
+  /socials                 all social links
+  /website /site           website button
+  /chart                   chart button
+  /stats                   live token + group stats
+  /raid                    raid call-to-action post (engagement)
+
+It references constants/helpers from the buy module. In the single-file bundle
+everything shares one namespace, so we read them from globals() with safe
+fallbacks (works both bundled and as a package).
+"""
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.ext import CommandHandler, ContextTypes
+
+
+
+# --- pull shared values from the buy module (bundle shares globals) ----------
+def _g(name, default=None):
+    return globals().get(name, default)
+
+
+def _const(name, default=""):
+    # works in the bundle (globals) and as a package (import from .buy)
+    val = globals().get(name)
+    if val is not None:
+        return val
+    try:
+        return getattr(_buy, name, default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+# --------------------------- /godmode --------------------------------------
+@group_only
+@admin_only
+async def godmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Turn on (or off) every protection at once."""
+    chat_id = target_chat(update)
+    msg = update.effective_message
+    off = bool(context.args) and context.args[0].lower() in ("off", "0", "stop")
+
+    if off:
+        db.set_setting(chat_id, "captcha_on", 0)
+        db.set_setting(chat_id, "antiraid_on", 0)
+        db.set_setting(chat_id, "flood_limit", 0)
+        await msg.reply_text(
+            "🔓 <b>God Mode OFF.</b>\n"
+            "Captcha, anti-raid and anti-flood relaxed. Locks &amp; blocklist "
+            "left as-is (use /unlock and /blocklistaction to change those).",
+            parse_mode=ParseMode.HTML)
+        return
+
+    # max security
+    db.set_setting(chat_id, "captcha_on", 1)
+    db.set_setting(chat_id, "captcha_mode", "button")
+    db.set_setting(chat_id, "antiraid_on", 1)
+    db.set_setting(chat_id, "antiraid_threshold", 5)
+    db.set_setting(chat_id, "antiraid_window", 30)
+    db.set_setting(chat_id, "antiraid_action", "mute")
+    db.set_setting(chat_id, "flood_limit", 6)
+    db.set_setting(chat_id, "flood_action", "mute")
+    db.set_setting(chat_id, "blocklist_action", "delete")
+    for lt in ("url", "forward", "invite"):
+        db.execute("INSERT OR IGNORE INTO locks (chat_id,lock_type) VALUES (?,?)",
+                   (chat_id, lt))
+
+    await msg.reply_text(
+        "🛡️ <b>GOD MODE ENGAGED</b> ⚡\n\n"
+        "✅ Captcha: <b>on</b> (button)\n"
+        "✅ Anti-raid: <b>on</b> (5 joins / 30s → mute)\n"
+        "✅ Anti-flood: <b>6 msgs → mute</b>\n"
+        "✅ Locked: <b>links, forwards, invites</b>\n"
+        "✅ Blocklist: <b>auto-delete</b>\n\n"
+        "The room is sealed. Scammers and raid bots get nothing.\n"
+        "Reminder: I need <b>Ban Users</b> + <b>Delete Messages</b> admin rights "
+        "for this to bite.\n\n∞ 3 · 6 · 9 ∞\n⚡ZAPP",
+        parse_mode=ParseMode.HTML)
+
+
+# --------------------------- quick link commands ---------------------------
+async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rows = [
+        [InlineKeyboardButton("🌐 Website", url=_const("WEBSITE")),
+         InlineKeyboardButton("𝕏 Twitter", url=_const("TWITTER"))],
+        [InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM")),
+         InlineKeyboardButton("📸 Instagram", url=_const("INSTAGRAM"))],
+    ]
+    extra = []
+    if _const("TIKTOK"):
+        extra.append(InlineKeyboardButton("🎵 TikTok", url=_const("TIKTOK")))
+    if _const("DISCORD"):
+        extra.append(InlineKeyboardButton("👾 Discord", url=_const("DISCORD")))
+    for i in range(0, len(extra), 2):
+        rows.append(extra[i:i + 2])
+    await update.effective_message.reply_text(
+        "📣 <b>⚡ZAPP Socials</b>\nFollow, like, repost — keep the signal loud. ⚡\n"
+        "∞ 3 · 6 · 9 ∞",
+        parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows),
+        disable_web_page_preview=True)
+
+
+async def website(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "🌐 <b>⚡ZAPP Website</b>\n∞ Free Energy = Free Money ∞",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🌐 Open zapp369.energy", url=_const("WEBSITE"))]]),
+        disable_web_page_preview=True)
+
+
+async def chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "📊 <b>⚡ZAPP Chart</b>\nTrack the current live. ⚡",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📊 Chart", url=_const("CHART")),
+            InlineKeyboardButton("🪐 Buy", url=_const("JUPITER")),
+        ]]),
+        disable_web_page_preview=True)
+
+
+# --------------------------- /stats ----------------------------------------
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    msg = update.effective_message
+    try:
+        members = await context.bot.get_chat_member_count(chat.id)
+    except Exception:  # noqa: BLE001
+        members = None
+    chat_id = target_chat(update)
+    tracked = db.query("SELECT COUNT(*) c FROM points WHERE chat_id=?", (chat_id,))
+    ntracked = tracked[0]["c"] if tracked else 0
+
+    body = "📊 <b>⚡ZAPP Stats</b>\n\n"
+    if members:
+        body += f"👥 <b>Members:</b> {members:,}\n"
+    body += f"⚡ <b>Active members tracked:</b> {ntracked:,}\n∞ 3 · 6 · 9 ∞"
+
+    # append live price if the buy module's fetcher is available
+    fetch = _g("_fetch_price_text")
+    if fetch:
+        txt = await fetch()
+        if txt:
+            body += "\n\n" + txt
+
+    await msg.reply_text(body, parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True)
+
+
+# --------------------------- /raid -----------------------------------------
+@group_only
+@admin_only
+async def raid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Post a raid call-to-action. Optional: /raid <tweet link> to target a post."""
+    target = ""
+    if context.args:
+        cand = context.args[0]
+        if cand.startswith("http"):
+            target = cand
+    link = target or _const("TWITTER")
+    label = "🐦 Go to the Post" if target else "𝕏 Go to ⚡ZAPP on X"
+    await update.effective_message.reply_text(
+        "⚡ <b>RAID TIME</b> ⚡\n\n"
+        "All hands on deck — like, repost, comment. Let's make ⚡ZAPP loud. 🔊\n"
+        "Every engagement powers the signal. 🔌\n\n"
+        "∞ Free Energy = Free Money ∞\n3 · 6 · 9 🚀",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton(label, url=link)]]))
+
+
+def register_powerpack(app):
+    app.add_handler(CommandHandler("godmode", godmode))
+    app.add_handler(CommandHandler("socials", socials))
+    app.add_handler(CommandHandler(["website", "site"], website))
+    app.add_handler(CommandHandler("chart", chart))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("raid", raid))
+
+
+# ===========================================================================
 # ---- watcher ------------------------------------------------------------
 # ===========================================================================
 
@@ -3393,9 +3616,13 @@ async def _post_init(app):
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
             ("buy", "How to buy ZAPP (CA + links)"),
+            ("trade", "Buy ZAPP inside Telegram"),
             ("price", "Live ZAPP price"),
             ("ca", "Official contract address"),
             ("whitepaper", "ZAPP whitepaper"),
+            ("socials", "All ZAPP socials"),
+            ("chart", "ZAPP chart"),
+            ("stats", "Live token + group stats"),
             ("top", "Points leaderboard"),
             ("points", "Check your points"),
             ("rules", "Show the group rules"),
@@ -3418,6 +3645,7 @@ def main():
     register_buy(app)
     register_points(app)
     register_protection(app)
+    register_powerpack(app)
     register_federation(app)
     register_watcher(app)
     app.add_error_handler(_on_error)
