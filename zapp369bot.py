@@ -172,6 +172,12 @@ def init_db():
                 name TEXT, won_at INTEGER,
                 PRIMARY KEY (chat_id, target)
             );
+            CREATE TABLE IF NOT EXISTS submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER, user_id INTEGER, name TEXT,
+                task TEXT, reward INTEGER, status TEXT DEFAULT 'pending',
+                created INTEGER, reviewed_by INTEGER, reviewed_at INTEGER
+            );
             CREATE TABLE IF NOT EXISTS feds (
                 fed_id TEXT PRIMARY KEY, name TEXT, owner_id INTEGER
             );
@@ -4129,6 +4135,240 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+# ===========================================================================
+#  SPREAD THE SIGNAL — shill-to-earn (social tasks + one-tap admin approval)
+# ===========================================================================
+# task -> (display label, reward points, max per day)
+SOCIAL_TASKS = {
+    "twitter":  ("𝕏 Repost / Quote", 30, 1),
+    "rt":       ("𝕏 Repost / Quote", 30, 1),
+    "repost":   ("𝕏 Repost / Quote", 30, 1),
+    "tweet":    ("𝕏 Original tweet", 40, 1),
+    "story":    ("📸 Instagram/Story", 25, 1),
+    "insta":    ("📸 Instagram/Story", 25, 1),
+    "tiktok":   ("🎵 TikTok post", 40, 1),
+    "share":    ("📤 Group share (WhatsApp/TG)", 20, 3),
+    "whatsapp": ("📤 WhatsApp share", 20, 3),
+    "like":     ("❤️ Like", 10, 3),
+    "comment":  ("💬 Comment", 15, 3),
+    "meme":     ("😂 Meme creation", 50, 3),
+    "gif":      ("🎞 GIF creation", 50, 3),
+    "sticker":  ("🩷 Sticker creation", 50, 3),
+}
+SOCIAL_DEFAULT = ("✨ Shill / proof", 20, 3)
+
+
+def _social_task(name):
+    if not name:
+        return SOCIAL_DEFAULT, "shill"
+    key = name.lower().lstrip("/#")
+    if key in SOCIAL_TASKS:
+        return SOCIAL_TASKS[key], key
+    return SOCIAL_DEFAULT, "shill"
+
+
+def _social_today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _social_count_today(chat_id, uid, task):
+    start = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0,
+                                                   microsecond=0).timestamp())
+    row = db.query(
+        "SELECT COUNT(*) c FROM submissions WHERE chat_id=? AND user_id=? AND task=? "
+        "AND created>=? AND status IN ('pending','approved')",
+        (chat_id, uid, task, start), one=True)
+    return row["c"] if row else 0
+
+
+async def tasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the Spread-the-Signal reward menu."""
+    lines = ["⚡ <b>SPREAD THE SIGNAL — earn points</b> ⚡",
+             "Do the action, then reply to your proof (screenshot/link) with "
+             "<code>/submit &lt;type&gt;</code>. An admin approves → you get points. 🔌\n"]
+    seen = set()
+    order = ["tweet", "twitter", "story", "tiktok", "share", "meme", "gif",
+             "sticker", "like", "comment"]
+    for k in order:
+        label, reward, cap = SOCIAL_TASKS[k]
+        if label in seen:
+            continue
+        seen.add(label)
+        lines.append(f"• <code>/submit {k}</code> — {label}  →  <b>+{reward}</b> "
+                     f"(max {cap}/day)")
+    lines.append("\nExample: repost our tweet, screenshot it, reply to the "
+                 "screenshot with <code>/submit twitter</code> ✅")
+    lines.append("Points feed /top and the 🏁 Race to 369. ∞ 3 · 6 · 9 ∞")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+@group_only
+async def submit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    reply = msg.reply_to_message
+    if not reply:
+        await msg.reply_text(
+            "📨 <b>How to submit:</b> do the action, then <b>reply to your proof</b> "
+            "(a screenshot, your tweet link, the meme/GIF/sticker) with "
+            "<code>/submit &lt;type&gt;</code>.\nSee all tasks &amp; rewards: /tasks",
+            parse_mode=ParseMode.HTML)
+        return
+    (label, reward, cap), taskkey = _social_task(context.args[0] if context.args else None)
+    # daily cap
+    if _social_count_today(chat_id, user.id, taskkey) >= cap:
+        await msg.reply_text(
+            f"⏳ You've hit today's limit for <b>{label}</b> ({cap}/day). "
+            "Try another task or come back tomorrow. /tasks",
+            parse_mode=ParseMode.HTML)
+        return
+    # too many pending overall?
+    pend = db.query("SELECT COUNT(*) c FROM submissions WHERE chat_id=? AND user_id=? "
+                    "AND status='pending'", (chat_id, user.id), one=True)
+    if pend and pend["c"] >= 5:
+        await msg.reply_text("⏳ You have several submissions awaiting review — "
+                             "let admins catch up first. 🙏")
+        return
+    name = user.first_name or "member"
+    db.execute(
+        "INSERT INTO submissions (chat_id,user_id,name,task,reward,status,created) "
+        "VALUES (?,?,?,?,?, 'pending', ?)",
+        (chat_id, user.id, name, taskkey, reward, int(time.time())))
+    sid = db.query("SELECT last_insert_rowid() id", one=True)["id"]
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Approve", callback_data=f"sub:ok:{sid}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"sub:no:{sid}"),
+    ]])
+    # post the review card as a reply to the proof so admins see it in context
+    await reply.reply_text(
+        f"🗳 <b>Submission #{sid}</b>\n"
+        f"From: {mention(user)}\n"
+        f"Task: {label}  →  <b>+{reward}</b> points\n"
+        f"👆 proof above. Admins, review:",
+        parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+    await msg.reply_text("📨 Submitted for review! Admins will approve shortly. ⚡")
+
+
+async def submit_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    chat_id = q.message.chat.id
+    if not await is_admin(chat_id, q.from_user.id, context):
+        await q.answer("Admins only. ⚡", show_alert=True)
+        return
+    try:
+        _, action, sid_s = q.data.split(":")
+        sid = int(sid_s)
+    except (ValueError, IndexError):
+        await q.answer()
+        return
+    row = db.query("SELECT * FROM submissions WHERE id=?", (sid,), one=True)
+    if not row:
+        await q.answer("Not found.")
+        return
+    if row["status"] != "pending":
+        await q.answer(f"Already {row['status']}.")
+        return
+    label = _social_task(row["task"])[0][0]
+    if action == "no":
+        db.execute("UPDATE submissions SET status='rejected',reviewed_by=?,reviewed_at=? "
+                   "WHERE id=?", (q.from_user.id, int(time.time()), sid))
+        await q.answer("Rejected")
+        try:
+            await q.edit_message_text(
+                f"❌ <b>Submission #{sid} rejected</b> ({label}) by {mention(q.from_user)}.",
+                parse_mode=ParseMode.HTML)
+        except BadRequest:
+            pass
+        return
+    # approve -> award
+    db.execute("UPDATE submissions SET status='approved',reviewed_by=?,reviewed_at=? "
+               "WHERE id=?", (q.from_user.id, int(time.time()), sid))
+    new = _apply_points(chat_id, row["user_id"], row["reward"], row["name"])
+    await q.answer(f"✅ +{row['reward']} awarded")
+    try:
+        await q.edit_message_text(
+            f"✅ <b>Submission #{sid} approved!</b> ({label})\n"
+            f"🎁 {mention_id(row['user_id'], row['name'])} earned "
+            f"<b>+{row['reward']}</b> → <b>{new:,}</b> total ⚡\n"
+            f"Approved by {mention(q.from_user)}",
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    except BadRequest:
+        pass
+    await check_milestone(context, chat_id, row["user_id"], new, row["name"])
+
+
+@group_only
+@admin_only
+async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    rows = db.query("SELECT * FROM submissions WHERE chat_id=? AND status='pending' "
+                    "ORDER BY created ASC LIMIT 15", (chat_id,))
+    if not rows:
+        await update.effective_message.reply_text("✅ No pending submissions. All clear! ⚡")
+        return
+    lines = ["🗳 <b>Pending submissions</b>:"]
+    for r in rows:
+        label = _social_task(r["task"])[0][0]
+        lines.append(f"#{r['id']} — {esc(r['name'] or 'member')} — {label} (+{r['reward']})")
+    lines.append("\nApprove/reject with the buttons on each submission card, or "
+                 "/approve &lt;id&gt; · /reject &lt;id&gt;.")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+@group_only
+@admin_only
+async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _review_by_id(update, context, approve=True)
+
+
+@group_only
+@admin_only
+async def reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _review_by_id(update, context, approve=False)
+
+
+async def _review_by_id(update, context, approve):
+    msg = update.effective_message
+    chat_id = target_chat(update)
+    if not context.args or not context.args[0].lstrip("#").isdigit():
+        await msg.reply_text("Usage: /approve <id>  (see /pending)")
+        return
+    sid = int(context.args[0].lstrip("#"))
+    row = db.query("SELECT * FROM submissions WHERE id=? AND chat_id=?", (sid, chat_id),
+                   one=True)
+    if not row:
+        await msg.reply_text("Submission not found.")
+        return
+    if row["status"] != "pending":
+        await msg.reply_text(f"Already {row['status']}.")
+        return
+    label = _social_task(row["task"])[0][0]
+    if not approve:
+        db.execute("UPDATE submissions SET status='rejected',reviewed_by=?,reviewed_at=? "
+                   "WHERE id=?", (update.effective_user.id, int(time.time()), sid))
+        await msg.reply_text(f"❌ #{sid} rejected ({label}).")
+        return
+    db.execute("UPDATE submissions SET status='approved',reviewed_by=?,reviewed_at=? "
+               "WHERE id=?", (update.effective_user.id, int(time.time()), sid))
+    new = _apply_points(chat_id, row["user_id"], row["reward"], row["name"])
+    await msg.reply_text(
+        f"✅ #{sid} approved ({label}) — {mention_id(row['user_id'], row['name'])} "
+        f"earned +{row['reward']} → <b>{new:,}</b> ⚡", parse_mode=ParseMode.HTML)
+    await check_milestone(context, chat_id, row["user_id"], new, row["name"])
+
+
+def register_social(app):
+    app.add_handler(CommandHandler(["tasks", "earn", "quests"], tasks_cmd))
+    app.add_handler(CommandHandler(["submit", "shill", "proof"], submit_cmd))
+    app.add_handler(CommandHandler(["pending", "queue"], pending_cmd))
+    app.add_handler(CommandHandler("approve", approve_cmd))
+    app.add_handler(CommandHandler("reject", reject_cmd))
+    app.add_handler(CallbackQueryHandler(submit_cb, pattern=r"^sub:(ok|no):\d+$"))
+
+
 def register_fun(app):
     app.add_handler(CommandHandler("spin", spin))
     app.add_handler(CommandHandler(["flip", "coinflip"], flip))
@@ -4345,6 +4585,8 @@ async def _post_init(app):
             ("spin", "Daily slot spin for points"),
             ("trivia", "Play ZAPP trivia for points"),
             ("tr", "Translate a message"),
+            ("tasks", "Earn points — social tasks"),
+            ("submit", "Submit proof to earn points"),
             ("top", "Points leaderboard"),
             ("milestone", "Race to 369 status"),
             ("give", "Reward someone points (reply)"),
@@ -4371,6 +4613,7 @@ def main():
     register_protection(app)
     register_powerpack(app)
     register_fun(app)
+    register_social(app)
     register_federation(app)
     register_watcher(app)
     app.add_error_handler(_on_error)
