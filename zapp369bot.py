@@ -2083,30 +2083,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 HELP_TEXT = (
-    f"{BRAND} <b>— Commands</b>\n\n"
-    "<b>🛡 Moderation</b>\n"
+    f"{BRAND} <b>— Command Guide</b>\n\n"
+    "<b>⚡ Token &amp; Buying</b>\n"
+    "<code>/buy</code> — CA + all buy links  •  <code>/trade</code> — buy inside Telegram\n"
+    "<code>/price /ca /chart /whitepaper /socials /website /stats</code>\n\n"
+    "<b>🏆 Earn &amp; Games</b>\n"
+    "<code>/points /top</code> — score &amp; leaderboard  •  <code>/milestone</code> — Race to 369\n"
+    "<code>/spin</code> daily slot  •  <code>/trivia</code> quiz  •  <code>/tasks</code> earn by sharing\n"
+    "<code>/submit &lt;type&gt;</code> (reply to proof) — shill-to-earn\n"
+    "<code>/flip /roll /dart /basket /8ball /rate</code>\n\n"
+    "<b>🌐 Tools</b>\n"
+    "<code>/tr</code> translate (reply to a message, or <code>/tr es hello</code>)  •  say <i>gm/gn</i>\n\n"
+    "<b>🛡 Moderation</b> <i>(admins)</i>\n"
     "<code>/ban /unban /kick /mute /unmute</code> — reply or @user; add <code>30m 2h 1d</code> for temp\n"
     "<code>/promote /demote /pin /unpin /purge /del</code>\n\n"
-    "<b>⚠️ Warnings</b>\n"
+    "<b>⚠️ Warnings</b> <i>(admins)</i>\n"
     "<code>/warn /unwarn /warns /resetwarns /setwarnlimit /setwarnaction</code>\n\n"
-    "<b>👋 Greetings</b>\n"
-    "<code>/setwelcome /welcome /setgoodbye /goodbye /cleanservice /captcha</code>\n"
-    "Placeholders: {name} {first} {username} {id} {group} — buttons via [Txt](buttonurl://link)\n\n"
-    "<b>📝 Content</b>\n"
-    "<code>/save /get /notes /clear</code> (or <code>#note</code>)  •  <code>/filter /filters /stop</code>  •  <code>/setrules /rules</code>  •  <code>/about /setabout</code>\n\n"
-    "<b>⚡ Token</b>\n"
-    "<code>/buy</code> — buy card (CA + buttons)  •  <code>/setbuyimage</code> (reply to a photo)  •  <code>/delbuyimage</code>\n\n"
-    "<b>🏆 Points</b>\n"
-    "<code>/points /top</code>  •  <code>/all</code> (tag everyone)  •  admins: <code>/addpoints @user 300</code> · <code>/setpoints</code> · <code>/resetpoints</code> · <code>/setdailypoints</code>\n\n"
-    "<b>🔒 Protection</b>\n"
-    "<code>/lock /unlock /locks</code>  •  <code>/setflood /flood</code>  •  <code>/antiraid</code>  •  <code>/nightmode</code>\n"
+    "<b>🔒 Protection</b> <i>(admins)</i>\n"
+    "<code>/godmode</code> — one-tap max security 🛡️\n"
+    "<code>/lock /unlock /locks /setflood /flood /antiraid /nightmode</code>\n"
     "<code>/addblocklist /blocklists /unblocklist /blocklistaction</code>\n\n"
-    "<b>🌐 Federations</b>\n"
-    "<code>/newfed /joinfed /leavefed /fedban /unfedban /fedinfo /fedpromote</code>\n\n"
-    "<b>🧰 Extras</b>\n"
-    "<code>/afk /approve /unapprove /approved /connect /disconnect</code>\n"
-    "<code>/disable /enable /disabled /setlog /unsetlog /settings</code>\n"
-    "<code>/id /info /stickerid /report</code>\n"
+    "<b>🎁 Rewards</b> <i>(admins)</i>\n"
+    "<code>/give</code> (reply) — tap to reward points  •  <code>/pending /approve /reject</code>\n"
+    "<code>/addpoints /setpoints /resetpoints /resetmilestone</code>\n\n"
+    "<b>👋 Greetings</b> <i>(admins)</i>\n"
+    "<code>/setwelcome /welcome /setgoodbye /goodbye /cleanservice /captcha</code>\n"
+    "<code>/setwelcomeimage /setrulesimage /setbuyimage</code> (reply to a photo)\n\n"
+    "<b>📝 Content</b> <i>(admins)</i>\n"
+    "<code>/save /get /notes /clear</code> (or <code>#note</code>)  •  <code>/filter /filters /stop</code>\n"
+    "<code>/setrules /rules /about /setabout</code>\n\n"
+    "<b>⏰ Auto-posts &amp; Raids</b> <i>(admins)</i>\n"
+    "<code>/autopost on|off|tz|test</code> — daily posts (6am,12,3,6,9pm)  •  <code>/raid</code>\n\n"
+    "<b>🌐 Federations &amp; Extras</b> <i>(admins)</i>\n"
+    "<code>/newfed /joinfed /fedban /fedinfo</code>  •  <code>/all</code> (tag everyone)\n"
+    "<code>/approve /connect /disable /enable /setlog /settings /id /report</code>\n"
 )
 
 
@@ -4077,10 +4087,20 @@ _TR_COMMON = {
 }
 
 
-def _do_translate(text, target):
-    """Blocking translate via deep-translator (free, no API key). Runs in a thread."""
-    from deep_translator import GoogleTranslator
-    return GoogleTranslator(source="auto", target=target).translate(text[:4500])
+async def _do_translate(text, target):
+    """Translate via Google's free endpoint over httpx. Returns (text, detected_src)."""
+    params = {"client": "gtx", "sl": "auto", "tl": target, "dt": "t", "q": text[:4500]}
+    url = "https://translate.googleapis.com/translate_a/single"
+    async with httpx.AsyncClient(timeout=12) as client:
+        r = await client.get(url, params=params,
+                             headers={"User-Agent": "Mozilla/5.0 (ZAPPbot)"})
+        r.raise_for_status()
+        data = r.json()
+    # data[0] = list of segments; each seg[0] is a translated chunk
+    segments = data[0] if data and isinstance(data[0], list) else []
+    translated = "".join(seg[0] for seg in segments if seg and seg[0])
+    detected = data[2] if len(data) > 2 and isinstance(data[2], str) else "auto"
+    return translated, detected
 
 
 async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4117,11 +4137,10 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        translated = await asyncio.to_thread(_do_translate, text, target)
+        translated, detected = await _do_translate(text, target)
     except Exception:  # noqa: BLE001
         await msg.reply_text(
-            "🌐 Couldn't translate right now (or that language code isn't valid). "
-            "Try again in a moment, e.g. <code>/tr en</code>.",
+            "🌐 Couldn't reach the translator right now — please try again in a moment.",
             parse_mode=ParseMode.HTML)
         return
 
@@ -4130,8 +4149,9 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lang_name = _TR_COMMON.get(target, target)
+    src_name = _TR_COMMON.get(detected, detected)
     await msg.reply_text(
-        f"🌐 <b>Translation → {esc(lang_name)}</b>\n{esc(translated)}",
+        f"🌐 <b>{esc(src_name)} → {esc(lang_name)}</b>\n{esc(translated)}",
         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 

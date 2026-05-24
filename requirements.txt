@@ -1,3 +1,2 @@
 python-telegram-bot[job-queue]==21.6
 tzdata
-deep-translator==1.11.4
