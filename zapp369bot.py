@@ -159,6 +159,10 @@ def init_db():
             CREATE TABLE IF NOT EXISTS afk (
                 user_id INTEGER PRIMARY KEY, reason TEXT, since INTEGER
             );
+            CREATE TABLE IF NOT EXISTS daily_use (
+                chat_id INTEGER, user_id INTEGER, game TEXT, day TEXT,
+                PRIMARY KEY (chat_id, user_id, game)
+            );
             CREATE TABLE IF NOT EXISTS feds (
                 fed_id TEXT PRIMARY KEY, name TEXT, owner_id INTEGER
             );
@@ -1184,11 +1188,10 @@ async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def _trade_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🤖 BonkBot", url=BONKBOT),
-         InlineKeyboardButton("🦅 Trojan", url=TROJAN)],
-        [InlineKeyboardButton("👻 Phantom", url=PHANTOM),
-         InlineKeyboardButton("🪐 Jupiter", url=JUPITER)],
-        [InlineKeyboardButton("💊 pump.fun", url=PUMPFUN)],
+        [InlineKeyboardButton("🦅 Trojan", url=TROJAN),
+         InlineKeyboardButton("👻 Phantom", url=PHANTOM)],
+        [InlineKeyboardButton("🪐 Jupiter", url=JUPITER),
+         InlineKeyboardButton("💊 pump.fun", url=PUMPFUN)],
     ])
 
 
@@ -1197,7 +1200,7 @@ async def trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🤖 <b>Buy ⚡ZAPP inside Telegram</b>\n\n"
         "1️⃣ Copy the CA below\n"
-        "2️⃣ Open BonkBot or Trojan\n"
+        "2️⃣ Open Trojan (or tap Phantom)\n"
         "3️⃣ Paste the CA, pick an amount, buy ⚡\n\n"
         "<b>CA</b> (tap to copy):\n"
         f"<code>{esc(CA)}</code>\n\n"
@@ -1419,9 +1422,12 @@ they unlock is up to the team.
 """
 from datetime import datetime, timezone, timedelta
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatType
-from telegram.ext import CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.error import BadRequest
+from telegram.ext import (
+    CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler,
+)
 
 
 # ZAPP rank tiers (threshold -> title)
@@ -1584,6 +1590,84 @@ async def addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+def _apply_points(chat_id, uid, amt, name=None):
+    """Add amt points to uid (floor 0). Returns new total."""
+    row = _row(chat_id, uid)
+    if row is None:
+        new = max(amt, 0)
+        db.execute("INSERT INTO points (chat_id,user_id,points,name) VALUES (?,?,?,?)",
+                   (chat_id, uid, new, name))
+    else:
+        new = max((row["points"] or 0) + amt, 0)
+        db.execute("UPDATE points SET points=? WHERE chat_id=? AND user_id=?",
+                   (new, chat_id, uid))
+    return new
+
+
+@group_only
+@admin_only
+async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Easiest way to reward: reply to someone with /give → tap a quick amount.
+    Or /give 50 (reply) to award directly, or /give @user 50."""
+    msg = update.effective_message
+    chat_id = target_chat(update)
+    uid, disp = await resolve_target(update, context)
+    if uid is None:
+        await msg.reply_text(
+            "💡 <b>Easiest way:</b> reply to the person's message with <b>/give</b> "
+            "and tap an amount. Or: /give @user 50",
+            parse_mode=ParseMode.HTML)
+        return
+    amt = _amount(context, skip_first=not msg.reply_to_message)
+    if amt is not None:
+        new = _apply_points(chat_id, uid, amt)
+        verb = "added to" if amt >= 0 else "removed from"
+        await msg.reply_text(
+            f"✅ <b>{abs(amt):,}</b> points {verb} {disp}.\nNew total: <b>{new:,}</b> ⚡",
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        return
+    # no amount given -> show quick-reward buttons
+    amounts = [10, 50, 100, 369]
+    row1 = [InlineKeyboardButton(f"⚡ +{a}", callback_data=f"gp:{uid}:{a}") for a in amounts]
+    kb = InlineKeyboardMarkup([row1,
+                               [InlineKeyboardButton("❌ Cancel", callback_data="gp:0:0")]])
+    await msg.reply_text(f"🎁 Reward {disp} — tap an amount:",
+                         parse_mode=ParseMode.HTML, reply_markup=kb,
+                         disable_web_page_preview=True)
+
+
+async def give_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle a tap on a /give quick-amount button. Admins only."""
+    q = update.callback_query
+    chat_id = q.message.chat.id
+    # only admins can award
+    if not await is_admin(chat_id, q.from_user.id, context):
+        await q.answer("Admins only. ⚡", show_alert=True)
+        return
+    try:
+        _, uid_s, amt_s = q.data.split(":")
+        uid, amt = int(uid_s), int(amt_s)
+    except (ValueError, IndexError):
+        await q.answer()
+        return
+    if uid == 0:  # cancel
+        await q.answer("Cancelled")
+        try:
+            await q.edit_message_text("❌ Cancelled.")
+        except BadRequest:
+            pass
+        return
+    new = _apply_points(chat_id, uid, amt)
+    await q.answer(f"✅ +{amt} given!")
+    try:
+        await q.edit_message_text(
+            f"🎁 {mention_id(uid)} got <b>+{amt:,}</b> points → <b>{new:,}</b> total ⚡\n"
+            f"Awarded by {mention(q.from_user)}",
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    except BadRequest:
+        pass
+
+
 @group_only
 @admin_only
 async def setpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1664,6 +1748,8 @@ def register_points(app):
     app.add_handler(CommandHandler(["points", "p", "rank"], points))
     app.add_handler(CommandHandler(["top", "leaderboard", "lb"], top))
     app.add_handler(CommandHandler(["addpoints", "givepoints"], addpoints))
+    app.add_handler(CommandHandler(["give", "reward"], give))
+    app.add_handler(CallbackQueryHandler(give_cb, pattern=r"^gp:-?\d+:-?\d+$"))
     app.add_handler(CommandHandler("setpoints", setpoints))
     app.add_handler(CommandHandler("resetpoints", resetpoints))
     app.add_handler(CommandHandler(["setdailypoints", "setdaily"], setdaily))
@@ -3429,6 +3515,249 @@ def register_powerpack(app):
 
 
 # ===========================================================================
+# ---- fun ------------------------------------------------------------
+# ===========================================================================
+
+"""
+⚡ ZAPP Engagement Pack — fun, interactive commands that keep the chat alive.
+
+  /spin           daily slot spin → win points (777 jackpot = 369 ⚡)
+  /flip           coin flip
+  /roll [n]       roll a dice (Telegram animated)
+  /dart /basket   throw a dart / shoot a hoop (animated)
+  /8ball <q>      magic 8-ball
+  /rate <thing>   rate something /10
+  /trivia         ZAPP/crypto trivia with answer buttons → points to first correct
+  gm / gn         the bot greets back (crypto culture)
+
+Game point rewards plug into the existing points table. Daily-limited where it
+could be farmed, so the economy stays meaningful.
+"""
+import random
+from datetime import datetime, timezone
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode, ChatType
+from telegram.error import BadRequest
+from telegram.ext import (
+    CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler,
+)
+
+
+
+def _today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _award(chat_id, user, n):
+    """Add n points to a user, creating their row if needed. Returns new total."""
+    name = (user.first_name or "user")
+    uname = user.username or ""
+    row = db.query("SELECT points FROM points WHERE chat_id=? AND user_id=?",
+                   (chat_id, user.id), one=True)
+    if row is None:
+        db.execute("INSERT INTO points (chat_id,user_id,points,name,username) "
+                   "VALUES (?,?,?,?,?)", (chat_id, user.id, max(n, 0), name, uname))
+        return max(n, 0)
+    new = max((row["points"] or 0) + n, 0)
+    db.execute("UPDATE points SET points=?,name=?,username=? WHERE chat_id=? AND user_id=?",
+               (new, name, uname, chat_id, user.id))
+    return new
+
+
+# --------------------------- /spin (daily slot) ----------------------------
+async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    if not user or chat.type == ChatType.PRIVATE:
+        await update.effective_message.reply_text("Spin inside the group. ⚡")
+        return
+    chat_id = target_chat(update)
+    today = _today()
+    row = db.query("SELECT day FROM daily_use WHERE chat_id=? AND user_id=? AND game='spin'",
+                   (chat_id, user.id), one=True)
+    if row and row["day"] == today:
+        await update.effective_message.reply_text(
+            "🎰 You already spun today — come back tomorrow for another pull. ⚡")
+        return
+    # send the native slot machine animation
+    try:
+        dm = await context.bot.send_dice(chat.id, emoji="🎰")
+        val = dm.dice.value  # 1..64; 64 = three 7s (jackpot)
+    except Exception:  # noqa: BLE001
+        val = random.randint(1, 64)
+    # mark used today
+    db.execute(
+        "INSERT INTO daily_use (chat_id,user_id,game,day) VALUES (?,?,'spin',?) "
+        "ON CONFLICT(chat_id,user_id,game) DO UPDATE SET day=?",
+        (chat_id, user.id, today, today))
+    # jackpot 64 = 777; corner values 1/22/43 are triple-bar/grape/lemon = nice wins
+    if val == 64:
+        reward, line = 369, "🎰 <b>JACKPOT — 777!</b> The current is STRONG ⚡"
+    elif val in (1, 22, 43):
+        reward, line = 99, "🎰 <b>Triple match!</b> Big spin ⚡"
+    else:
+        reward, line = 9, "🎰 Spin complete — here's your daily charge ⚡"
+    total = _award(chat_id, user, reward)
+    # small delay so the dice finishes animating before the result text
+    await update.effective_message.reply_text(
+        f"{line}\n+{reward} points → <b>{total:,}</b> total\n∞ 3 · 6 · 9 ∞",
+        parse_mode=ParseMode.HTML)
+
+
+# --------------------------- quick games -----------------------------------
+async def flip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "🪙 " + random.choice(["<b>HEADS</b> ⚡", "<b>TAILS</b> ⚡"]),
+        parse_mode=ParseMode.HTML)
+
+
+async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.send_dice(update.effective_chat.id, emoji="🎲")
+    except Exception:  # noqa: BLE001
+        await update.effective_message.reply_text(f"🎲 {random.randint(1, 6)}")
+
+
+async def dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.send_dice(update.effective_chat.id, emoji="🎯")
+    except Exception:  # noqa: BLE001
+        await update.effective_message.reply_text("🎯")
+
+
+async def basket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.send_dice(update.effective_chat.id, emoji="🏀")
+    except Exception:  # noqa: BLE001
+        await update.effective_message.reply_text("🏀")
+
+
+_8BALL = [
+    "Yes. ⚡", "Absolutely.", "No doubt about it.", "The signal says yes.",
+    "Ask again later.", "Hmm... unclear.", "Don't count on it.", "No.",
+    "The current points to yes.", "3 · 6 · 9 says... maybe.",
+]
+
+
+async def eightball(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = " ".join(context.args).strip()
+    if not q:
+        await update.effective_message.reply_text("🎱 Ask me a yes/no question: /8ball will we moon?")
+        return
+    await update.effective_message.reply_text("🎱 " + random.choice(_8BALL))
+
+
+async def rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thing = " ".join(context.args).strip()
+    if not thing:
+        await update.effective_message.reply_text("Usage: /rate <something>")
+        return
+    n = random.randint(1, 10)
+    extra = " 🔥" if n >= 8 else (" 💀" if n <= 3 else "")
+    await update.effective_message.reply_text(
+        f"I rate {esc(thing)} a <b>{n}/10</b>{extra}", parse_mode=ParseMode.HTML)
+
+
+# --------------------------- /trivia (button quiz) -------------------------
+# (question, options, correct_index)
+_TRIVIA = [
+    ("⚡ What number sequence is ZAPP built on?",
+     ["1 · 2 · 3", "3 · 6 · 9", "7 · 7 · 7", "4 · 2 · 0"], 1),
+    ("⚡ Which blockchain is ⚡ZAPP on?",
+     ["Ethereum", "Solana", "BNB", "Bitcoin"], 1),
+    ("⚡ Who inspired the ZAPP theme?",
+     ["Edison", "Einstein", "Nikola Tesla", "Newton"], 2),
+    ("⚡ ZAPP's tagline: Free Energy = ___?",
+     ["Free Money", "Free Lunch", "Free Time", "Free Wifi"], 0),
+    ("What does 'CA' stand for in crypto?",
+     ["Cash App", "Contract Address", "Crypto Account", "Coin Alert"], 1),
+    ("What wallet is most popular on Solana?",
+     ["MetaMask", "Phantom", "Trust", "Ledger"], 1),
+    ("What does 'gm' mean in crypto culture?",
+     ["Good Move", "Good Morning", "Get Money", "Gas Mode"], 1),
+    ("What's a 'rug pull'?",
+     ["A big buy", "A scam exit by devs", "A price chart", "A type of wallet"], 1),
+]
+
+# active trivia per chat: {chat_id: {"answer": idx, "msg_id": id, "solved": bool}}
+_active_trivia = {}
+
+
+@group_only
+async def trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    q, opts, correct = random.choice(_TRIVIA)
+    letters = ["🅰️", "🅱️", "🇨", "🇩"]
+    kb = [[InlineKeyboardButton(f"{letters[i]} {opts[i]}",
+                                callback_data=f"trv:{i}")] for i in range(len(opts))]
+    m = await update.effective_message.reply_text(
+        f"🧠 <b>ZAPP Trivia</b>\n\n{q}\n\nFirst correct answer wins <b>36</b> points ⚡",
+        parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+    _active_trivia[chat_id] = {"answer": correct, "msg_id": m.message_id,
+                               "solved": False, "q": q, "opts": opts}
+
+
+async def trivia_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    chat_id = q.message.chat.id
+    state = _active_trivia.get(chat_id)
+    if not state or state["msg_id"] != q.message.message_id:
+        await q.answer("This round is over. ⚡")
+        return
+    if state["solved"]:
+        await q.answer("Someone already got it! ⚡")
+        return
+    picked = int(q.data.split(":")[1])
+    if picked != state["answer"]:
+        await q.answer("❌ Not quite — let someone else try!")
+        return
+    # correct + first
+    state["solved"] = True
+    user = q.from_user
+    total = _award(chat_id, user, 36)
+    await q.answer("✅ Correct! +36 points")
+    right = state["opts"][state["answer"]]
+    try:
+        await q.edit_message_text(
+            f"🧠 <b>ZAPP Trivia</b>\n\n{state['q']}\n\n"
+            f"✅ Answer: <b>{esc(right)}</b>\n"
+            f"🏆 {mention(user)} got it first! +36 points → <b>{total:,}</b> ⚡",
+            parse_mode=ParseMode.HTML)
+    except BadRequest:
+        pass
+
+
+# --------------------------- gm / gn culture -------------------------------
+async def greet_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg or not msg.text:
+        return
+    word = msg.text.strip().lower().strip("!. ")
+    if word in ("gm", "good morning", "gm fam", "gm gm"):
+        await msg.reply_text(random.choice(
+            ["gm ⚡", "gm fam ⚡ the current is flowing", "gm ⚡ 3 · 6 · 9", "gm ⚡⚡"]))
+    elif word in ("gn", "good night", "gn fam"):
+        await msg.reply_text(random.choice(
+            ["gn ⚡ rest up, signal stays on", "gn fam ⚡", "gn ⚡ 3 · 6 · 9"]))
+
+
+def register_fun(app):
+    app.add_handler(CommandHandler("spin", spin))
+    app.add_handler(CommandHandler(["flip", "coinflip"], flip))
+    app.add_handler(CommandHandler("roll", roll))
+    app.add_handler(CommandHandler("dart", dart))
+    app.add_handler(CommandHandler(["basket", "hoop"], basket))
+    app.add_handler(CommandHandler(["8ball", "eightball"], eightball))
+    app.add_handler(CommandHandler("rate", rate))
+    app.add_handler(CommandHandler(["trivia", "quiz"], trivia))
+    app.add_handler(CallbackQueryHandler(trivia_cb, pattern=r"^trv:\d+$"))
+    # gm/gn greet-back — own group so it never blocks moderation/points
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, greet_keyword), group=4)
+
+
+# ===========================================================================
 # ---- watcher ------------------------------------------------------------
 # ===========================================================================
 
@@ -3623,7 +3952,10 @@ async def _post_init(app):
             ("socials", "All ZAPP socials"),
             ("chart", "ZAPP chart"),
             ("stats", "Live token + group stats"),
+            ("spin", "Daily slot spin for points"),
+            ("trivia", "Play ZAPP trivia for points"),
             ("top", "Points leaderboard"),
+            ("give", "Reward someone points (reply)"),
             ("points", "Check your points"),
             ("rules", "Show the group rules"),
             ("report", "Report a message to admins"),
@@ -3646,6 +3978,7 @@ def main():
     register_points(app)
     register_protection(app)
     register_powerpack(app)
+    register_fun(app)
     register_federation(app)
     register_watcher(app)
     app.add_error_handler(_on_error)
