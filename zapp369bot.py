@@ -119,7 +119,8 @@ def init_db():
                 welcome_entities TEXT,
                 autopost_on INTEGER DEFAULT 0,
                 autopost_tz TEXT DEFAULT 'Europe/Zurich',
-                autopost_thread INTEGER
+                autopost_thread INTEGER,
+                games_thread INTEGER
             );
             CREATE TABLE IF NOT EXISTS warns (
                 chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
@@ -224,6 +225,7 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN autopost_tz TEXT DEFAULT 'Europe/Zurich'",
             "ALTER TABLE settings ADD COLUMN autopost_thread INTEGER",
             "ALTER TABLE daily_use ADD COLUMN count INTEGER DEFAULT 0",
+            "ALTER TABLE settings ADD COLUMN games_thread INTEGER",
         ):
             try:
                 c.execute(stmt)
@@ -402,6 +404,32 @@ def target_chat(update: Update):
     if update.effective_chat.type == ChatType.PRIVATE:
         return pm_connections.get(update.effective_user.id, update.effective_chat.id)
     return update.effective_chat.id
+
+
+def games_only(func):
+    """Restrict a game to the configured 'games topic' (e.g. Contests & Giveaways).
+    If no topic is set, games work everywhere (backward compatible)."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        msg = update.effective_message
+        chat = update.effective_chat
+        # DMs / connected chats: don't thread-restrict
+        if not msg or chat.type == ChatType.PRIVATE:
+            return await func(update, context)
+        chat_id = target_chat(update)
+        try:
+            allowed = db.get_settings(chat_id)["games_thread"]
+        except Exception:  # noqa: BLE001
+            allowed = None
+        if not allowed:
+            return await func(update, context)  # no restriction set
+        if getattr(msg, "message_thread_id", None) == allowed:
+            return await func(update, context)
+        # wrong topic — point them to the right one
+        await msg.reply_text(
+            "🎮 Games live in the <b>Contests &amp; Giveaways ✨</b> topic — "
+            "head there to play! ⚡", parse_mode=ParseMode.HTML)
+        return
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -2183,6 +2211,38 @@ async def game_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await fn(update, context)
 
 
+@group_only
+@admin_only
+async def setgamestopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run inside a topic to lock games to it (e.g. Contests & Giveaways)."""
+    msg = update.effective_message
+    chat_id = target_chat(update)
+    thread = getattr(msg, "message_thread_id", None)
+    if not thread:
+        await msg.reply_text(
+            "⚠️ Run <b>/setgamestopic</b> <i>inside</i> the <b>Contests &amp; Giveaways ✨</b> "
+            "topic (not in General) so I know which topic to lock games to.",
+            parse_mode=ParseMode.HTML)
+        return
+    db.set_setting(chat_id, "games_thread", thread)
+    await msg.reply_text(
+        "🎮 <b>Games locked to this topic!</b> ⚡\n"
+        "All games (/spin, /trivia, /rps, /flip, /roll, /dart, /basket, /8ball, "
+        "/rate, /guess, /duel, /fortune) now only work here.\n"
+        "Undo anytime with /cleargamestopic.",
+        parse_mode=ParseMode.HTML)
+
+
+@group_only
+@admin_only
+async def cleargamestopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    db.set_setting(chat_id, "games_thread", None)
+    await update.effective_message.reply_text(
+        "🎮 Games are now allowed in <b>every</b> topic again. ⚡",
+        parse_mode=ParseMode.HTML)
+
+
 HELP_TEXT = (
     f"{BRAND} <b>— Command Guide</b>\n\n"
     "<b>⚡ Token &amp; Buying</b>\n"
@@ -2504,6 +2564,8 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_extras(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(game_cb, pattern=r"^game:"))
+    app.add_handler(CommandHandler(["setgamestopic", "setgameschannel"], setgamestopic))
+    app.add_handler(CommandHandler("cleargamestopic", cleargamestopic))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("afk", afk))
     app.add_handler(CommandHandler("approve", approve))
@@ -4043,6 +4105,7 @@ def _slot_payout_table():
     )
 
 
+@games_only
 async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -4094,12 +4157,14 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --------------------------- quick games -----------------------------------
+@games_only
 async def flip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🪙 " + random.choice(["<b>HEADS</b> ⚡", "<b>TAILS</b> ⚡"]),
         parse_mode=ParseMode.HTML)
 
 
+@games_only
 async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_dice(update.effective_chat.id, emoji="🎲")
@@ -4107,6 +4172,7 @@ async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f"🎲 {random.randint(1, 6)}")
 
 
+@games_only
 async def dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_dice(update.effective_chat.id, emoji="🎯")
@@ -4114,6 +4180,7 @@ async def dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("🎯")
 
 
+@games_only
 async def basket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_dice(update.effective_chat.id, emoji="🏀")
@@ -4128,6 +4195,7 @@ _8BALL = [
 ]
 
 
+@games_only
 async def eightball(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = " ".join(context.args).strip()
     if not q:
@@ -4136,6 +4204,7 @@ async def eightball(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text("🎱 " + random.choice(_8BALL))
 
 
+@games_only
 async def rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thing = " ".join(context.args).strip()
     if not thing:
@@ -4198,6 +4267,7 @@ _TRIVIA = [
 _active_trivia = {}
 
 
+@games_only
 @group_only
 @admin_only
 async def trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4259,6 +4329,7 @@ async def greet_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --------------------------- more games (pure fun, no points) --------------
+@games_only
 async def rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Rock paper scissors vs the bot — tap a button."""
     kb = InlineKeyboardMarkup([[
@@ -4295,6 +4366,7 @@ async def rps_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+@games_only
 async def guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Guess a number 1–10. /guess 7"""
     args = context.args
@@ -4313,6 +4385,7 @@ async def guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
+@games_only
 @group_only
 async def duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Challenge another member to a ⚡ dice duel — reply to them with /duel."""
@@ -4351,6 +4424,7 @@ _FORTUNES = [
 ]
 
 
+@games_only
 async def fortune(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🔮 <b>⚡ZAPP Fortune</b>\n" + random.choice(_FORTUNES),
