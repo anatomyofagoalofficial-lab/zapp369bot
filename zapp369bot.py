@@ -165,6 +165,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS daily_use (
                 chat_id INTEGER, user_id INTEGER, game TEXT, day TEXT,
+                count INTEGER DEFAULT 0,
                 PRIMARY KEY (chat_id, user_id, game)
             );
             CREATE TABLE IF NOT EXISTS milestone (
@@ -214,6 +215,7 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN autopost_on INTEGER DEFAULT 0",
             "ALTER TABLE settings ADD COLUMN autopost_tz TEXT DEFAULT 'Europe/Zurich'",
             "ALTER TABLE settings ADD COLUMN autopost_thread INTEGER",
+            "ALTER TABLE daily_use ADD COLUMN count INTEGER DEFAULT 0",
         ):
             try:
                 c.execute(stmt)
@@ -3898,42 +3900,95 @@ async def _check_milestone(context, chat_id, uid, total, name=None):
 
 
 # --------------------------- /spin (daily slot) ----------------------------
+SPIN_DAILY_MAX = 3
+# Telegram 🎰 reel symbols, index 0..3 (matches the value decode below)
+_SLOT_SYMBOLS = ["🍫", "🍇", "🍋", "7️⃣"]  # BAR, grapes, lemon, seven
+
+
+def _decode_slot(value):
+    """Decode Telegram 🎰 dice value (1..64) into 3 reel symbol indices."""
+    v = value - 1
+    return [v & 0b11, (v >> 2) & 0b11, (v >> 4) & 0b11]
+
+
+def _slot_payout(reels):
+    """Return (reward, headline) for a set of 3 reel indices. Payouts kept modest."""
+    sevens = reels.count(3)
+    if sevens == 3:
+        return 36, "💰🎰 <b>MEGA JACKPOT — 777!!!</b> 🎰💰\nThe current is OVERFLOWING ⚡⚡⚡"
+    counts = {}
+    for r in reels:
+        counts[r] = counts.get(r, 0) + 1
+    best = max(counts.values())
+    if best == 3:
+        return 18, "🎉 <b>TRIPLE MATCH!</b> Three of a kind — huge! ⚡"
+    if best == 2 and sevens >= 1:
+        return 9, "🔥 <b>Double + Lucky 7!</b> Nice pull ⚡"
+    if best == 2:
+        return 6, "✨ <b>Two of a kind!</b> Small win ⚡"
+    if sevens >= 1:
+        return 3, "🍀 A lucky 7 landed — small charge ⚡"
+    return 1, "🎰 No match this time — spin again! ⚡"
+
+
+def _slot_payout_table():
+    return (
+        "🎰 <b>PAYOUT TABLE</b>\n"
+        "7️⃣7️⃣7️⃣ Mega Jackpot → <b>+36</b>\n"
+        "Any triple → <b>+18</b>\n"
+        "Pair + 7️⃣ → <b>+9</b>\n"
+        "Any pair → <b>+6</b>\n"
+        "A single 7️⃣ → <b>+3</b>\n"
+        "No match → <b>+1</b>"
+    )
+
+
 async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     if not user or chat.type == ChatType.PRIVATE:
-        await update.effective_message.reply_text("Spin inside the group. ⚡")
+        await update.effective_message.reply_text("🎰 Spin inside the group. ⚡")
         return
     chat_id = target_chat(update)
     today = _today()
-    row = db.query("SELECT day FROM daily_use WHERE chat_id=? AND user_id=? AND game='spin'",
-                   (chat_id, user.id), one=True)
-    if row and row["day"] == today:
+    row = db.query(
+        "SELECT day, count FROM daily_use WHERE chat_id=? AND user_id=? AND game='spin'",
+        (chat_id, user.id), one=True)
+    used = row["count"] if (row and row["day"] == today and row["count"]) else 0
+    if used >= SPIN_DAILY_MAX:
         await update.effective_message.reply_text(
-            "🎰 You already spun today — come back tomorrow for another pull. ⚡")
+            f"🎰 You've used all <b>{SPIN_DAILY_MAX}</b> spins today — the machine's "
+            f"resting. Come back tomorrow! ⚡\n\n{_slot_payout_table()}",
+            parse_mode=ParseMode.HTML)
         return
-    # send the native slot machine animation
+    # spin the native animated slot machine
     try:
         dm = await context.bot.send_dice(chat.id, emoji="🎰")
-        val = dm.dice.value  # 1..64; 64 = three 7s (jackpot)
+        val = dm.dice.value
     except Exception:  # noqa: BLE001
         val = random.randint(1, 64)
-    # mark used today
+    # record the spin (resets count automatically on a new day)
     db.execute(
-        "INSERT INTO daily_use (chat_id,user_id,game,day) VALUES (?,?,'spin',?) "
-        "ON CONFLICT(chat_id,user_id,game) DO UPDATE SET day=?",
-        (chat_id, user.id, today, today))
-    # jackpot 64 = 777; corner values 1/22/43 are triple-bar/grape/lemon = nice wins
-    if val == 64:
-        reward, line = 36, "🎰 <b>JACKPOT — 777!</b> The current is STRONG ⚡"
-    elif val in (1, 22, 43):
-        reward, line = 12, "🎰 <b>Triple match!</b> Big spin ⚡"
-    else:
-        reward, line = 3, "🎰 Spin complete — here's your daily charge ⚡"
+        "INSERT INTO daily_use (chat_id,user_id,game,day,count) VALUES (?,?,'spin',?,1) "
+        "ON CONFLICT(chat_id,user_id,game) DO UPDATE SET day=excluded.day, "
+        "count=CASE WHEN daily_use.day=excluded.day THEN daily_use.count+1 ELSE 1 END",
+        (chat_id, user.id, today))
+    spins_left = SPIN_DAILY_MAX - (used + 1)
+
+    reels = _decode_slot(val)
+    reel_str = " | ".join(_SLOT_SYMBOLS[i] for i in reels)
+    reward, headline = _slot_payout(reels)
     total = _award(chat_id, user, reward)
-    # small delay so the dice finishes animating before the result text
+
+    left_line = (f"🎟 Spins left today: <b>{spins_left}</b>/{SPIN_DAILY_MAX}"
+                 if spins_left > 0 else "🎟 That was your last spin today!")
     await update.effective_message.reply_text(
-        f"{line}\n+{reward} points → <b>{total:,}</b> total\n∞ 3 · 6 · 9 ∞",
+        f"{headline}\n\n"
+        f"〜〜〜〜〜〜〜〜〜\n"
+        f"   {reel_str}\n"
+        f"〜〜〜〜〜〜〜〜〜\n\n"
+        f"💸 Won <b>+{reward}</b> → <b>{total:,}</b> ⚡ZAPP credits\n"
+        f"{left_line}\n∞ 3 · 6 · 9 ∞",
         parse_mode=ParseMode.HTML)
     await _check_milestone(context, chat_id, user.id, total, user.first_name)
 
