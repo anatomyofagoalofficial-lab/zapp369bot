@@ -15,6 +15,7 @@ import re
 import html
 import time
 import random
+import asyncio
 import secrets
 import sqlite3
 import logging
@@ -115,7 +116,10 @@ def init_db():
                 nightmode_end TEXT DEFAULT '07:00',
                 log_channel INTEGER,
                 rules_entities TEXT,
-                welcome_entities TEXT
+                welcome_entities TEXT,
+                autopost_on INTEGER DEFAULT 0,
+                autopost_tz TEXT DEFAULT 'Europe/Zurich',
+                autopost_thread INTEGER
             );
             CREATE TABLE IF NOT EXISTS warns (
                 chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
@@ -163,6 +167,11 @@ def init_db():
                 chat_id INTEGER, user_id INTEGER, game TEXT, day TEXT,
                 PRIMARY KEY (chat_id, user_id, game)
             );
+            CREATE TABLE IF NOT EXISTS milestone (
+                chat_id INTEGER, target INTEGER, user_id INTEGER,
+                name TEXT, won_at INTEGER,
+                PRIMARY KEY (chat_id, target)
+            );
             CREATE TABLE IF NOT EXISTS feds (
                 fed_id TEXT PRIMARY KEY, name TEXT, owner_id INTEGER
             );
@@ -196,6 +205,9 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN about_entities TEXT",
             "ALTER TABLE settings ADD COLUMN rules_image TEXT",
             "ALTER TABLE settings ADD COLUMN rules_image_type TEXT DEFAULT 'photo'",
+            "ALTER TABLE settings ADD COLUMN autopost_on INTEGER DEFAULT 0",
+            "ALTER TABLE settings ADD COLUMN autopost_tz TEXT DEFAULT 'Europe/Zurich'",
+            "ALTER TABLE settings ADD COLUMN autopost_thread INTEGER",
         ):
             try:
                 c.execute(stmt)
@@ -1421,6 +1433,7 @@ Points are an internal score only — not crypto, not on-chain. What (if anythin
 they unlock is up to the team.
 """
 from datetime import datetime, timezone, timedelta
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode, ChatType
@@ -1446,6 +1459,84 @@ def _title(pts):
         if pts >= thr:
             return name
     return TIERS[-1][1]
+
+
+# --------------------------- Race to 369 -----------------------------------
+MILESTONE_TARGET = 369
+
+
+async def check_milestone(context, chat_id, uid, total, name=None):
+    """Called after any point award. If this user is the FIRST to reach the
+    target, lock them in (race-safe) and announce. Fires at most once per chat."""
+    if total is None or total < MILESTONE_TARGET:
+        return
+    # already have a winner? cheap early exit
+    existing = db.query("SELECT user_id FROM milestone WHERE chat_id=? AND target=?",
+                        (chat_id, MILESTONE_TARGET), one=True)
+    if existing:
+        return
+    # race-safe claim: PK on (chat_id,target) means only the first INSERT sticks
+    db.execute(
+        "INSERT OR IGNORE INTO milestone (chat_id,target,user_id,name,won_at) "
+        "VALUES (?,?,?,?,?)",
+        (chat_id, MILESTONE_TARGET, uid, name, int(time.time())))
+    row = db.query("SELECT user_id FROM milestone WHERE chat_id=? AND target=?",
+                   (chat_id, MILESTONE_TARGET), one=True)
+    if not row or row["user_id"] != uid:
+        return  # someone else already claimed it
+    try:
+        await context.bot.send_message(
+            chat_id,
+            "🏆⚡ <b>WE HAVE A WINNER!</b> ⚡🏆\n\n"
+            f"{mention_id(uid)} is the <b>FIRST to reach {MILESTONE_TARGET} points!</b> 🎉\n"
+            "The 3 · 6 · 9 frequency chose you. ⚡\n\n"
+            "🎁 An admin will be in touch with your reward.\n\n"
+            "Think you're next? Spin daily with /spin, play /trivia, and keep the "
+            "chat charged to climb the ranks. /top to see where you stand. 🔌\n\n"
+            "∞ Free Energy = Free Money ∞\n⚡ZAPP",
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@group_only
+async def milestone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the Race to 369 status."""
+    chat_id = target_chat(update)
+    won = db.query("SELECT user_id,name,won_at FROM milestone WHERE chat_id=? AND target=?",
+                   (chat_id, MILESTONE_TARGET), one=True)
+    if won:
+        who = esc(won["name"]) if won["name"] else mention_id(won["user_id"])
+        await update.effective_message.reply_text(
+            f"🏆 <b>Race to {MILESTONE_TARGET}</b> — already won by {who}! ⚡\n"
+            "Admins can start a new round with /resetmilestone.",
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        return
+    leader = db.query(
+        "SELECT name,points FROM points WHERE chat_id=? ORDER BY points DESC LIMIT 1",
+        (chat_id,), one=True)
+    lead_txt = ""
+    if leader and leader["points"]:
+        left = max(MILESTONE_TARGET - leader["points"], 0)
+        lead_txt = (f"\n👑 Leader: <b>{esc(leader['name'] or 'someone')}</b> "
+                    f"with {leader['points']:,} pts ({left:,} to go)")
+    await update.effective_message.reply_text(
+        f"🏁 <b>Race to {MILESTONE_TARGET} points!</b>\n"
+        "First member to reach <b>369</b> wins a reward. ⚡\n"
+        "Earn points: chat daily, /spin, /trivia." + lead_txt,
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+@group_only
+@admin_only
+async def resetmilestone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear the winner so the Race to 369 can run again."""
+    chat_id = target_chat(update)
+    db.execute("DELETE FROM milestone WHERE chat_id=? AND target=?",
+               (chat_id, MILESTONE_TARGET))
+    await update.effective_message.reply_text(
+        f"🔄 <b>Race to {MILESTONE_TARGET} reset!</b> A new round is live — "
+        "first to 369 wins. ⚡", parse_mode=ParseMode.HTML)
 
 
 def _today():
@@ -1503,6 +1594,9 @@ async def activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "UPDATE points SET points=points+?,name=?,username=?,last_award=?,streak=? "
         "WHERE chat_id=? AND user_id=?",
         (s["points_daily"], name, uname, today, streak, chat_id, user.id))
+    new = db.query("SELECT points FROM points WHERE chat_id=? AND user_id=?",
+                   (chat_id, user.id), one=True)
+    await check_milestone(context, chat_id, user.id, new["points"] if new else None, name)
 
 
 # --------------------------- /points ---------------------------------------
@@ -1588,6 +1682,7 @@ async def addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"✅ <b>{abs(amt):,}</b> points {verb} {disp}.\nNew total: <b>{new:,}</b> ⚡",
         parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await check_milestone(context, chat_id, uid, new, disp)
 
 
 def _apply_points(chat_id, uid, amt, name=None):
@@ -1625,6 +1720,7 @@ async def give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             f"✅ <b>{abs(amt):,}</b> points {verb} {disp}.\nNew total: <b>{new:,}</b> ⚡",
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        await check_milestone(context, chat_id, uid, new, disp)
         return
     # no amount given -> show quick-reward buttons
     amounts = [10, 50, 100, 369]
@@ -1666,6 +1762,7 @@ async def give_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except BadRequest:
         pass
+    await check_milestone(context, chat_id, uid, new)
 
 
 @group_only
@@ -1747,6 +1844,8 @@ async def tag_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_points(app):
     app.add_handler(CommandHandler(["points", "p", "rank"], points))
     app.add_handler(CommandHandler(["top", "leaderboard", "lb"], top))
+    app.add_handler(CommandHandler(["milestone", "race", "race369"], milestone))
+    app.add_handler(CommandHandler("resetmilestone", resetmilestone))
     app.add_handler(CommandHandler(["addpoints", "givepoints"], addpoints))
     app.add_handler(CommandHandler(["give", "reward"], give))
     app.add_handler(CallbackQueryHandler(give_cb, pattern=r"^gp:-?\d+:-?\d+$"))
@@ -3339,11 +3438,19 @@ Adds:
   /chart                   chart button
   /stats                   live token + group stats
   /raid                    raid call-to-action post (engagement)
+  /autopost on|off|...      scheduled daily messages (6am,12,3,6,9pm)
 
 It references constants/helpers from the buy module. In the single-file bundle
 everything shares one namespace, so we read them from globals() with safe
 fallbacks (works both bundled and as a package).
 """
+import random
+from datetime import time as dtime
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # noqa: BLE001
+    ZoneInfo = None
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import CommandHandler, ContextTypes
@@ -3505,6 +3612,203 @@ async def raid(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [[InlineKeyboardButton(label, url=link)]]))
 
 
+# --------------------------- AUTO-POSTS ------------------------------------
+# Daily scheduled messages. Times are 6am, 12pm, 3pm, 6pm, 9pm (3·6·9 themed).
+AUTOPOST_SLOTS = [
+    ("morning", 6, 0),
+    ("noon", 12, 0),
+    ("three", 15, 0),
+    ("six", 18, 0),
+    ("nine", 21, 0),
+]
+
+
+def _ap_buy_kb():
+    rows = [[InlineKeyboardButton("🪐 Buy", url=_const("JUPITER")),
+             InlineKeyboardButton("📊 Chart", url=_const("CHART"))]]
+    ph = _const("PHANTOM")
+    if ph:
+        rows.append([InlineKeyboardButton("👻 Phantom", url=ph)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _ap_socials_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌐 Website", url=_const("WEBSITE")),
+         InlineKeyboardButton("𝕏 Twitter", url=_const("TWITTER"))],
+        [InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM"))],
+    ])
+
+
+def _autopost_message(slot):
+    """Return (text, reply_markup) for a slot. A little randomness keeps it fresh."""
+    ca = _const("CA")
+    if slot == "morning":
+        text = random.choice([
+            "🌅 <b>gm ⚡ZAPP fam!</b>\nThe current is back on. New day, same mission: "
+            "free energy = free money. ⚡\n\nNew here? Tap below to grab ⚡ZAPP.\n∞ 3 · 6 · 9 ∞",
+            "🌅 <b>gm!</b> ⚡\nRise and charge up. The signal never sleeps and neither does "
+            "the grind. Secure your ⚡ZAPP today.\n∞ Free Energy = Free Money ∞",
+        ])
+        return text, _ap_buy_kb()
+    if slot == "noon":
+        text = ("☀️ <b>Midday charge</b> ⚡\nSecured your ⚡ZAPP today?\n\n"
+                f"<b>CA</b> (tap to copy):\n<code>{ca}</code>\n\n"
+                "⚠️ Only ever use this CA. Admins never DM first.\n∞ 3 · 6 · 9 ∞")
+        return text, _ap_buy_kb()
+    if slot == "three":
+        text = random.choice([
+            "⚡ <b>3 o'clock — the 3·6·9 hour</b> ⚡\nGrind your points: /spin your daily "
+            "slot 🎰, smash /trivia 🧠, climb /top.\n🏁 First to <b>369 points</b> wins a "
+            "reward — could be you. Check /milestone!",
+            "🔌 <b>Afternoon energy check</b> ⚡\nDaily /spin done? /trivia played?\n"
+            "Every point gets you closer to the <b>Race to 369</b> reward. /milestone",
+        ])
+        return text, None
+    if slot == "six":
+        text = random.choice([
+            "📊 <b>Evening check</b> ⚡\nTrack the chart, stack your bag. The revolution "
+            "compounds. ⚡\n∞ 3 · 6 · 9 ∞",
+            "🔥 <b>6pm — prime time</b> ⚡\nChart's open, community's loud. Don't fade the "
+            "frequency.\n∞ Free Energy = Free Money ∞",
+        ])
+        return text, _ap_buy_kb()
+    # nine
+    text = random.choice([
+        "🌙 <b>gn ⚡ZAPP fam.</b>\nThe signal stays on while you rest. Follow our socials "
+        "so you never miss a beat. ⚡\n∞ 3 · 6 · 9 ∞",
+        "🌙 <b>gn!</b> ⚡\nGreat day for the current. Stay plugged in — big things charge "
+        "up overnight. ⚡",
+    ])
+    return text, _ap_socials_kb()
+
+
+async def _autopost_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    slot = data.get("slot")
+    if chat_id is None:
+        return
+    # only post if still enabled
+    s = db.get_settings(chat_id)
+    if not s["autopost_on"]:
+        return
+    text, kb = _autopost_message(slot)
+    kwargs = {"parse_mode": ParseMode.HTML, "disable_web_page_preview": True}
+    if kb:
+        kwargs["reply_markup"] = kb
+    thread = s["autopost_thread"]
+    if thread:
+        kwargs["message_thread_id"] = thread
+    try:
+        await context.bot.send_message(chat_id, text, **kwargs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ap_tz(tzname):
+    if ZoneInfo:
+        try:
+            return ZoneInfo(tzname)
+        except Exception:  # noqa: BLE001
+            pass
+    return None  # PTB falls back to UTC if tzinfo is None on a naive time -> use UTC
+
+
+def schedule_autoposts(app, chat_id):
+    """(Re)schedule the 5 daily auto-posts for one chat."""
+    jq = app.job_queue
+    if not jq:
+        return
+    # clear existing
+    for slot, _h, _m in AUTOPOST_SLOTS:
+        for j in jq.get_jobs_by_name(f"ap_{chat_id}_{slot}"):
+            j.schedule_removal()
+    s = db.get_settings(chat_id)
+    if not s["autopost_on"]:
+        return
+    tz = _ap_tz(s["autopost_tz"] or "Europe/Zurich")
+    for slot, h, m in AUTOPOST_SLOTS:
+        t = dtime(h, m, tzinfo=tz) if tz else dtime(h, m)
+        jq.run_daily(_autopost_job, t, data={"chat_id": chat_id, "slot": slot},
+                     name=f"ap_{chat_id}_{slot}")
+
+
+def reschedule_autoposts(app):
+    """On startup, schedule auto-posts for every chat that has them enabled."""
+    try:
+        rows = db.query("SELECT chat_id FROM settings WHERE autopost_on=1")
+    except Exception:  # noqa: BLE001
+        rows = []
+    for r in rows:
+        schedule_autoposts(app, r["chat_id"])
+
+
+@group_only
+@admin_only
+async def autopost(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    msg = update.effective_message
+    args = [a for a in context.args]
+    sub = args[0].lower() if args else "status"
+    s = db.get_settings(chat_id)
+
+    if sub == "on":
+        db.set_setting(chat_id, "autopost_on", 1)
+        # if run inside a forum topic, post there; else General
+        thread = getattr(msg, "message_thread_id", None)
+        db.set_setting(chat_id, "autopost_thread", thread)
+        schedule_autoposts(context.application, chat_id)
+        where = "this topic" if thread else "the group (General)"
+        await msg.reply_text(
+            f"⏰ <b>Auto-posts ON</b> ⚡\nDaily messages at <b>6am, 12pm, 3pm, 6pm, 9pm</b> "
+            f"({s['autopost_tz']}) in {where}.\n"
+            "Change zone: /autopost tz Europe/London\nPreview now: /autopost test",
+            parse_mode=ParseMode.HTML)
+        return
+    if sub == "off":
+        db.set_setting(chat_id, "autopost_on", 0)
+        schedule_autoposts(context.application, chat_id)
+        await msg.reply_text("⏰ Auto-posts <b>OFF</b>.", parse_mode=ParseMode.HTML)
+        return
+    if sub == "tz" and len(args) >= 2:
+        tzname = args[1]
+        if _ap_tz(tzname) is None and ZoneInfo is not None:
+            await msg.reply_text(
+                "❓ Unknown timezone. Use a name like <code>Europe/Zurich</code>, "
+                "<code>America/New_York</code>, or <code>UTC</code>.",
+                parse_mode=ParseMode.HTML)
+            return
+        db.set_setting(chat_id, "autopost_tz", tzname)
+        if s["autopost_on"]:
+            schedule_autoposts(context.application, chat_id)
+        await msg.reply_text(f"🕒 Auto-post timezone set to <b>{tzname}</b>.",
+                             parse_mode=ParseMode.HTML)
+        return
+    if sub == "test":
+        slot = args[1] if len(args) >= 2 and args[1] in dict((s2, 1) for s2, _, _ in AUTOPOST_SLOTS) else "three"
+        text, kb = _autopost_message(slot)
+        kwargs = {"parse_mode": ParseMode.HTML, "disable_web_page_preview": True}
+        if kb:
+            kwargs["reply_markup"] = kb
+        await msg.reply_text("👀 <b>Preview</b> — this is what an auto-post looks like:",
+                             parse_mode=ParseMode.HTML)
+        await msg.reply_text(text, **kwargs)
+        return
+
+    # status
+    state = "ON ✅" if s["autopost_on"] else "OFF"
+    await msg.reply_text(
+        f"⏰ <b>Auto-posts:</b> {state}\n"
+        f"🕒 Times: 6am, 12pm, 3pm, 6pm, 9pm ({s['autopost_tz']})\n\n"
+        "Commands:\n"
+        "/autopost on — enable (posts here)\n"
+        "/autopost off — disable\n"
+        "/autopost tz &lt;Zone&gt; — set timezone\n"
+        "/autopost test — preview a message",
+        parse_mode=ParseMode.HTML)
+
+
 def register_powerpack(app):
     app.add_handler(CommandHandler("godmode", godmode))
     app.add_handler(CommandHandler("socials", socials))
@@ -3512,6 +3816,7 @@ def register_powerpack(app):
     app.add_handler(CommandHandler("chart", chart))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("raid", raid))
+    app.add_handler(CommandHandler(["autopost", "autoposts"], autopost))
 
 
 # ===========================================================================
@@ -3565,6 +3870,17 @@ def _award(chat_id, user, n):
     return new
 
 
+async def _check_milestone(context, chat_id, uid, total, name=None):
+    """Call the points module's Race-to-369 checker (shared bundle namespace)."""
+    fn = globals().get("check_milestone")
+    if fn is None:
+        try:
+            fn = _p.check_milestone
+        except Exception:  # noqa: BLE001
+            return
+    await fn(context, chat_id, uid, total, name)
+
+
 # --------------------------- /spin (daily slot) ----------------------------
 async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -3603,6 +3919,7 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         f"{line}\n+{reward} points → <b>{total:,}</b> total\n∞ 3 · 6 · 9 ∞",
         parse_mode=ParseMode.HTML)
+    await _check_milestone(context, chat_id, user.id, total, user.first_name)
 
 
 # --------------------------- quick games -----------------------------------
@@ -3726,6 +4043,7 @@ async def trivia_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
     except BadRequest:
         pass
+    await _check_milestone(context, chat_id, user.id, total, user.first_name)
 
 
 # --------------------------- gm / gn culture -------------------------------
@@ -3742,6 +4060,75 @@ async def greet_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ["gn ⚡ rest up, signal stays on", "gn fam ⚡", "gn ⚡ 3 · 6 · 9"]))
 
 
+# --------------------------- translator ------------------------------------
+# Common language codes for friendly help text
+_TR_COMMON = {
+    "en": "English", "es": "Spanish", "ro": "Romanian", "fr": "French",
+    "de": "German", "it": "Italian", "pt": "Portuguese", "ru": "Russian",
+    "tr": "Turkish", "ar": "Arabic", "hi": "Hindi", "zh-CN": "Chinese",
+    "ja": "Japanese", "ko": "Korean", "nl": "Dutch", "pl": "Polish",
+    "uk": "Ukrainian", "id": "Indonesian", "vi": "Vietnamese", "fa": "Persian",
+}
+
+
+def _do_translate(text, target):
+    """Blocking translate via deep-translator (free, no API key). Runs in a thread."""
+    from deep_translator import GoogleTranslator
+    return GoogleTranslator(source="auto", target=target).translate(text[:4500])
+
+
+async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not msg:
+        return
+    args = list(context.args)
+    reply = msg.reply_to_message
+    target = "en"  # default: translate into English
+
+    # optional leading language code, e.g. /tr es  or  /tr es hola
+    if args and re.fullmatch(r"[a-zA-Z]{2}(-[a-zA-Z]{2})?", args[0]) and (reply or len(args) > 1):
+        target = args[0].lower()
+        if target == "zh":
+            target = "zh-CN"
+        args = args[1:]
+
+    if args:
+        text = " ".join(args)
+    elif reply:
+        text = reply.text or reply.caption
+    else:
+        text = None
+
+    if not text:
+        codes = ", ".join(list(_TR_COMMON)[:10])
+        await msg.reply_text(
+            "🌐 <b>Translator</b>\n"
+            "• Reply to a message with <code>/tr</code> → translate to English\n"
+            "• <code>/tr es</code> (reply) → translate to Spanish\n"
+            "• <code>/tr ro Good morning</code> → translate text to Romanian\n\n"
+            f"Common codes: {codes} …",
+            parse_mode=ParseMode.HTML)
+        return
+
+    try:
+        translated = await asyncio.to_thread(_do_translate, text, target)
+    except Exception:  # noqa: BLE001
+        await msg.reply_text(
+            "🌐 Couldn't translate right now (or that language code isn't valid). "
+            "Try again in a moment, e.g. <code>/tr en</code>.",
+            parse_mode=ParseMode.HTML)
+        return
+
+    if not translated:
+        await msg.reply_text("🌐 Nothing to translate there.")
+        return
+
+    lang_name = _TR_COMMON.get(target, target)
+    await msg.reply_text(
+        f"🌐 <b>Translation → {esc(lang_name)}</b>\n{esc(translated)}",
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 def register_fun(app):
     app.add_handler(CommandHandler("spin", spin))
     app.add_handler(CommandHandler(["flip", "coinflip"], flip))
@@ -3750,6 +4137,7 @@ def register_fun(app):
     app.add_handler(CommandHandler(["basket", "hoop"], basket))
     app.add_handler(CommandHandler(["8ball", "eightball"], eightball))
     app.add_handler(CommandHandler("rate", rate))
+    app.add_handler(CommandHandler(["tr", "translate", "trans"], translate_cmd))
     app.add_handler(CommandHandler(["trivia", "quiz"], trivia))
     app.add_handler(CallbackQueryHandler(trivia_cb, pattern=r"^trv:\d+$"))
     # gm/gn greet-back — own group so it never blocks moderation/points
@@ -3941,6 +4329,7 @@ async def _on_error(update, context):
 
 async def _post_init(app):
     reschedule_all(app)
+    reschedule_autoposts(app)
     try:
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
@@ -3952,9 +4341,12 @@ async def _post_init(app):
             ("socials", "All ZAPP socials"),
             ("chart", "ZAPP chart"),
             ("stats", "Live token + group stats"),
+            ("autopost", "Scheduled daily posts (admin)"),
             ("spin", "Daily slot spin for points"),
             ("trivia", "Play ZAPP trivia for points"),
+            ("tr", "Translate a message"),
             ("top", "Points leaderboard"),
+            ("milestone", "Race to 369 status"),
             ("give", "Reward someone points (reply)"),
             ("points", "Check your points"),
             ("rules", "Show the group rules"),
