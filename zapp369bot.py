@@ -3925,11 +3925,11 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (chat_id, user.id, today, today))
     # jackpot 64 = 777; corner values 1/22/43 are triple-bar/grape/lemon = nice wins
     if val == 64:
-        reward, line = 369, "🎰 <b>JACKPOT — 777!</b> The current is STRONG ⚡"
+        reward, line = 36, "🎰 <b>JACKPOT — 777!</b> The current is STRONG ⚡"
     elif val in (1, 22, 43):
-        reward, line = 99, "🎰 <b>Triple match!</b> Big spin ⚡"
+        reward, line = 12, "🎰 <b>Triple match!</b> Big spin ⚡"
     else:
-        reward, line = 9, "🎰 Spin complete — here's your daily charge ⚡"
+        reward, line = 3, "🎰 Spin complete — here's your daily charge ⚡"
     total = _award(chat_id, user, reward)
     # small delay so the dice finishes animating before the result text
     await update.effective_message.reply_text(
@@ -4011,6 +4011,32 @@ _TRIVIA = [
      ["Good Move", "Good Morning", "Get Money", "Gas Mode"], 1),
     ("What's a 'rug pull'?",
      ["A big buy", "A scam exit by devs", "A price chart", "A type of wallet"], 1),
+    ("⚡ What does the 'ZAPP' lightning stand for?",
+     ["Energy", "Speed", "Anger", "Rain"], 0),
+    ("How many lightning bolts in 3·6·9 philosophy's core?",
+     ["3, 6, 9", "1, 2, 3", "9, 9, 9", "6, 6, 6"], 0),
+    ("What is 'HODL'?",
+     ["Sell fast", "Hold long-term", "A wallet", "A DEX"], 1),
+    ("What's an airdrop?",
+     ["Free token distribution", "A price crash", "A type of chart", "A scam only"], 0),
+    ("Which is a Solana DEX aggregator?",
+     ["Uniswap", "Jupiter", "PancakeSwap", "SushiSwap"], 1),
+    ("What does 'DYOR' mean?",
+     ["Do Your Own Research", "Don't Yell Or Run", "Daily Yield Of Returns", "Drop Your Old Rug"], 0),
+    ("What's 'market cap'?",
+     ["Price × supply", "Daily volume", "Number of holders", "Liquidity only"], 0),
+    ("What was Tesla's dream for energy?",
+     ["Expensive grids", "Free wireless power", "Oil only", "Coal plants"], 1),
+    ("What's a 'whale' in crypto?",
+     ["A tiny holder", "A large holder", "A scammer", "A developer"], 1),
+    ("⚡ Where do you buy ⚡ZAPP safely?",
+     ["Random DMs", "The official CA only", "Any lookalike", "Email links"], 1),
+    ("What does 'LP' mean?",
+     ["Liquidity Pool", "Long Position", "Low Price", "Last Pump"], 0),
+    ("What's 'FOMO'?",
+     ["Fear Of Missing Out", "Found On My Own", "Fast Order Market Open", "Free Online Money"], 0),
+    ("What's 'diamond hands'?",
+     ["Selling quickly", "Holding through dips", "A type of wallet", "A mining rig"], 1),
 ]
 
 # active trivia per chat: {chat_id: {"answer": idx, "msg_id": id, "solved": bool}}
@@ -4025,7 +4051,7 @@ async def trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton(f"{letters[i]} {opts[i]}",
                                 callback_data=f"trv:{i}")] for i in range(len(opts))]
     m = await update.effective_message.reply_text(
-        f"🧠 <b>ZAPP Trivia</b>\n\n{q}\n\nFirst correct answer wins <b>36</b> points ⚡",
+        f"🧠 <b>ZAPP Trivia</b>\n\n{q}\n\nFirst correct answer wins <b>9</b> points ⚡",
         parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
     _active_trivia[chat_id] = {"answer": correct, "msg_id": m.message_id,
                                "solved": False, "q": q, "opts": opts}
@@ -4048,14 +4074,14 @@ async def trivia_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # correct + first
     state["solved"] = True
     user = q.from_user
-    total = _award(chat_id, user, 36)
-    await q.answer("✅ Correct! +36 points")
+    total = _award(chat_id, user, 9)
+    await q.answer("✅ Correct! +9 points")
     right = state["opts"][state["answer"]]
     try:
         await q.edit_message_text(
             f"🧠 <b>ZAPP Trivia</b>\n\n{state['q']}\n\n"
             f"✅ Answer: <b>{esc(right)}</b>\n"
-            f"🏆 {mention(user)} got it first! +36 points → <b>{total:,}</b> ⚡",
+            f"🏆 {mention(user)} got it first! +9 points → <b>{total:,}</b> ⚡",
             parse_mode=ParseMode.HTML)
     except BadRequest:
         pass
@@ -4074,6 +4100,105 @@ async def greet_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif word in ("gn", "good night", "gn fam"):
         await msg.reply_text(random.choice(
             ["gn ⚡ rest up, signal stays on", "gn fam ⚡", "gn ⚡ 3 · 6 · 9"]))
+
+
+# --------------------------- more games (pure fun, no points) --------------
+async def rps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Rock paper scissors vs the bot — tap a button."""
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🪨 Rock", callback_data="rps:rock"),
+        InlineKeyboardButton("📄 Paper", callback_data="rps:paper"),
+        InlineKeyboardButton("✂️ Scissors", callback_data="rps:scissors"),
+    ]])
+    await update.effective_message.reply_text(
+        "✊ <b>Rock · Paper · Scissors</b> ⚡\nPick your move:",
+        parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+_RPS_EMOJI = {"rock": "🪨", "paper": "📄", "scissors": "✂️"}
+_RPS_BEATS = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+
+
+async def rps_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    you = q.data.split(":")[1]
+    bot_pick = random.choice(list(_RPS_EMOJI))
+    if you == bot_pick:
+        result = "🤝 It's a draw!"
+    elif _RPS_BEATS[you] == bot_pick:
+        result = "🏆 You win! ⚡"
+    else:
+        result = "🤖 Bot wins! Try again."
+    await q.answer()
+    try:
+        await q.edit_message_text(
+            f"✊ <b>Rock · Paper · Scissors</b>\n\n"
+            f"You: {_RPS_EMOJI[you]}   vs   Bot: {_RPS_EMOJI[bot_pick]}\n\n{result}",
+            parse_mode=ParseMode.HTML)
+    except BadRequest:
+        pass
+
+
+async def guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Guess a number 1–10. /guess 7"""
+    args = context.args
+    if not args or not args[0].lstrip("-").isdigit():
+        await update.effective_message.reply_text(
+            "🔢 Guess a number 1–10: <code>/guess 7</code>", parse_mode=ParseMode.HTML)
+        return
+    pick = int(args[0])
+    n = random.randint(1, 10)
+    if pick == n:
+        msg = f"🎯 <b>{n}</b> — spot on! You read the frequency. ⚡"
+    elif abs(pick - n) == 1:
+        msg = f"🔥 So close! It was <b>{n}</b>."
+    else:
+        msg = f"❌ It was <b>{n}</b>. Try again!"
+    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+@group_only
+async def duel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Challenge another member to a ⚡ dice duel — reply to them with /duel."""
+    msg = update.effective_message
+    reply = msg.reply_to_message
+    if not reply or not reply.from_user:
+        await msg.reply_text("⚔️ Reply to someone with <b>/duel</b> to challenge them!",
+                             parse_mode=ParseMode.HTML)
+        return
+    challenger = update.effective_user
+    target = reply.from_user
+    if target.is_bot:
+        await msg.reply_text("🤖 You can't duel a bot. Pick a real challenger!")
+        return
+    a, b = random.randint(1, 6), random.randint(1, 6)
+    while a == b:
+        a, b = random.randint(1, 6), random.randint(1, 6)
+    winner = challenger if a > b else target
+    await msg.reply_text(
+        f"⚔️ <b>⚡ DUEL ⚡</b>\n\n"
+        f"{mention(challenger)} rolled 🎲 <b>{a}</b>\n"
+        f"{mention(target)} rolled 🎲 <b>{b}</b>\n\n"
+        f"🏆 {mention(winner)} wins the charge! ⚡",
+        parse_mode=ParseMode.HTML)
+
+
+_FORTUNES = [
+    "The current favors the bold today. ⚡",
+    "Diamond hands shall be rewarded. 💎",
+    "3 · 6 · 9 — your numbers are aligning. 🔮",
+    "Patience now, power later. The signal builds. 🔌",
+    "Today is a good day to spread the signal. 📣",
+    "A green candle approaches... maybe. 🕯️📈",
+    "The energy is strong. Stay plugged in. ⚡",
+    "Fortune favors those who HODL. 🙌",
+]
+
+
+async def fortune(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "🔮 <b>⚡ZAPP Fortune</b>\n" + random.choice(_FORTUNES),
+        parse_mode=ParseMode.HTML)
 
 
 # --------------------------- translator ------------------------------------
@@ -4397,6 +4522,11 @@ def register_fun(app):
     app.add_handler(CommandHandler(["basket", "hoop"], basket))
     app.add_handler(CommandHandler(["8ball", "eightball"], eightball))
     app.add_handler(CommandHandler("rate", rate))
+    app.add_handler(CommandHandler(["rps", "rockpaperscissors"], rps))
+    app.add_handler(CallbackQueryHandler(rps_cb, pattern=r"^rps:(rock|paper|scissors)$"))
+    app.add_handler(CommandHandler("guess", guess))
+    app.add_handler(CommandHandler(["duel", "fight"], duel))
+    app.add_handler(CommandHandler(["fortune", "luck"], fortune))
     app.add_handler(CommandHandler(["tr", "translate", "trans"], translate_cmd))
     app.add_handler(CommandHandler(["trivia", "quiz"], trivia))
     app.add_handler(CallbackQueryHandler(trivia_cb, pattern=r"^trv:\d+$"))
