@@ -120,7 +120,9 @@ def init_db():
                 autopost_on INTEGER DEFAULT 0,
                 autopost_tz TEXT DEFAULT 'Europe/Zurich',
                 autopost_thread INTEGER,
-                games_thread INTEGER
+                games_thread INTEGER,
+                autoguard_on INTEGER DEFAULT 0,
+                autofaq_on INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS warns (
                 chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
@@ -226,6 +228,8 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN autopost_thread INTEGER",
             "ALTER TABLE daily_use ADD COLUMN count INTEGER DEFAULT 0",
             "ALTER TABLE settings ADD COLUMN games_thread INTEGER",
+            "ALTER TABLE settings ADD COLUMN autoguard_on INTEGER DEFAULT 0",
+            "ALTER TABLE settings ADD COLUMN autofaq_on INTEGER DEFAULT 0",
         ):
             try:
                 c.execute(stmt)
@@ -3683,6 +3687,8 @@ async def godmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.set_setting(chat_id, "flood_limit", 6)
     db.set_setting(chat_id, "flood_action", "mute")
     db.set_setting(chat_id, "blocklist_action", "delete")
+    db.set_setting(chat_id, "autoguard_on", 1)
+    db.set_setting(chat_id, "autofaq_on", 1)
     for lt in ("url", "forward", "invite"):
         db.execute("INSERT OR IGNORE INTO locks (chat_id,lock_type) VALUES (?,?)",
                    (chat_id, lt))
@@ -3693,11 +3699,69 @@ async def godmode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ Anti-raid: <b>on</b> (5 joins / 30s → mute)\n"
         "✅ Anti-flood: <b>6 msgs → mute</b>\n"
         "✅ Locked: <b>links, forwards, invites</b>\n"
-        "✅ Blocklist: <b>auto-delete</b>\n\n"
-        "The room is sealed. Scammers and raid bots get nothing.\n"
-        "Reminder: I need <b>Ban Users</b> + <b>Delete Messages</b> admin rights "
-        "for this to bite.\n\n∞ 3 · 6 · 9 ∞\n⚡ZAPP",
+        "✅ Blocklist: <b>auto-delete</b>\n"
+        "✅ Auto-Guard: <b>on</b> (auto-removes scams/phishing/fake CAs)\n\n"
+        "The room is sealed. Scammers and raid bots get nothing — even while "
+        "you're away.\nReminder: I need <b>Ban Users</b> + <b>Delete Messages</b> "
+        "admin rights for this to bite.\n\n∞ 3 · 6 · 9 ∞\n⚡ZAPP",
         parse_mode=ParseMode.HTML)
+
+
+@group_only
+@admin_only
+async def autoguard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle the autonomous anti-scam guard."""
+    chat_id = target_chat(update)
+    msg = update.effective_message
+    arg = context.args[0].lower() if context.args else ""
+    if arg == "on":
+        db.set_setting(chat_id, "autoguard_on", 1)
+        await msg.reply_text(
+            "🛡️ <b>Auto-Guard ON</b> ⚡\nI'll auto-remove phishing, fake-support/admin "
+            "impersonation, fake airdrops, doubler scams and foreign/fake contract "
+            "addresses — and mute repeat offenders. Perfect for when you're away.",
+            parse_mode=ParseMode.HTML)
+    elif arg == "off":
+        db.set_setting(chat_id, "autoguard_on", 0)
+        await msg.reply_text("🛡️ Auto-Guard <b>OFF</b>.", parse_mode=ParseMode.HTML)
+    else:
+        s = db.get_settings(chat_id)
+        state = "ON ✅" if s["autoguard_on"] else "OFF"
+        await msg.reply_text(
+            f"🛡️ <b>Auto-Guard:</b> {state}\n"
+            "Catches: wallet phishing, seed/key requests, fake airdrops, admin/"
+            "support impersonation, doubler scams, foreign contract addresses.\n"
+            "Action: delete + warn, then mute after 3 strikes.\n"
+            "Usage: <code>/autoguard on|off</code>  (also turned on by /godmode)",
+            parse_mode=ParseMode.HTML)
+
+
+@group_only
+@admin_only
+async def autofaq_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle the auto-answer FAQ (group answers common questions itself)."""
+    chat_id = target_chat(update)
+    msg = update.effective_message
+    arg = context.args[0].lower() if context.args else ""
+    if arg == "on":
+        db.set_setting(chat_id, "autofaq_on", 1)
+        await msg.reply_text(
+            "💬 <b>Auto-FAQ ON</b> ⚡\nI'll auto-answer when members ask about buying, "
+            "the CA, price, chart, safety, whitepaper, socials, or 'when moon' — "
+            "so the group stays helpful even when no admin is online.",
+            parse_mode=ParseMode.HTML)
+    elif arg == "off":
+        db.set_setting(chat_id, "autofaq_on", 0)
+        await msg.reply_text("💬 Auto-FAQ <b>OFF</b>.", parse_mode=ParseMode.HTML)
+    else:
+        s = db.get_settings(chat_id)
+        state = "ON ✅" if s["autofaq_on"] else "OFF"
+        await msg.reply_text(
+            f"💬 <b>Auto-FAQ:</b> {state}\n"
+            "Auto-answers: how to buy, CA, price, chart, is-it-safe, whitepaper, "
+            "socials, when-moon. Rate-limited so it never spams.\n"
+            "Usage: <code>/autofaq on|off</code>  (also turned on by /godmode)",
+            parse_mode=ParseMode.HTML)
 
 
 # --------------------------- quick link commands ---------------------------
@@ -3991,6 +4055,8 @@ async def autopost(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register_powerpack(app):
     app.add_handler(CommandHandler("godmode", godmode))
+    app.add_handler(CommandHandler(["autoguard", "antiscam"], autoguard))
+    app.add_handler(CommandHandler(["autofaq", "faq"], autofaq_cmd))
     app.add_handler(CommandHandler("socials", socials))
     app.add_handler(CommandHandler(["website", "site"], website))
     app.add_handler(CommandHandler("chart", chart))
@@ -4808,6 +4874,43 @@ def _lock_triggered(locks, msg):
     )
 
 
+# ===========================================================================
+#  AUTO-GUARD — autonomous anti-scam (runs without an admin present)
+# ===========================================================================
+# High-precision scam patterns. Kept tight to avoid false-positives on real members.
+_AG_PATTERNS = [
+    (re.compile(r"\bseed phrase\b", re.I), "seed-phrase phishing"),
+    (re.compile(r"\bprivate key\b", re.I), "private-key phishing"),
+    (re.compile(r"\brecovery phrase\b", re.I), "recovery-phrase phishing"),
+    (re.compile(r"\b(connect|verify|validate|sync|restore|import)\b.{0,16}\bwallet\b", re.I), "wallet phishing"),
+    (re.compile(r"\bwallet\b.{0,16}\b(validation|verification|sync|connect|restore)\b", re.I), "wallet phishing"),
+    (re.compile(r"\bclaim\b.{0,16}\bairdrop\b", re.I), "fake airdrop"),
+    (re.compile(r"\bairdrop\b.{0,12}\bis (now )?live\b", re.I), "fake airdrop"),
+    (re.compile(r"\bclaiming is (now )?live\b", re.I), "fake airdrop"),
+    (re.compile(r"\bi('?m| am)\b.{0,14}\b(admin|mod|moderator|support|founder|the dev)\b", re.I), "admin impersonation"),
+    (re.compile(r"\b(official|customer|technical)\s+support\b", re.I), "fake support"),
+    (re.compile(r"\bdm\b.{0,8}\b(me|admin|support)\b.{0,18}\b(for|to|help|claim|issue|problem)\b", re.I), "DM bait"),
+    (re.compile(r"\bsend\b.{0,6}\b\d.{0,12}\b(get|receive|double)\b.{0,12}\bback\b", re.I), "doubler scam"),
+    (re.compile(r"\bwhatsapp\b.{0,12}(\+?\d[\d\s-]{7,})", re.I), "off-platform contact"),
+]
+_AG_FOREIGN_CA = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}pump\b")
+_ag_hits = defaultdict(int)  # (chat_id, user_id) -> autoguard strikes this session
+
+
+def _autoguard_reason(text):
+    """Return a short reason string if text looks like a scam, else None."""
+    if not text:
+        return None
+    for rx, reason in _AG_PATTERNS:
+        if rx.search(text):
+            return reason
+    official = globals().get("CA")
+    for m in _AG_FOREIGN_CA.findall(text):
+        if official and m != official:
+            return "foreign/fake contract address"
+    return None
+
+
 async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or update.effective_chat.type == ChatType.PRIVATE:
@@ -4877,6 +4980,36 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 6) Anti-flood
     s = db.get_settings(chat_id)
+    # 5.5) Auto-Guard — autonomous anti-scam
+    if s["autoguard_on"] and text:
+        reason = _autoguard_reason(text)
+        if reason:
+            try:
+                await msg.delete()
+            except BadRequest:
+                pass
+            _ag_hits[(chat_id, user.id)] += 1
+            hits = _ag_hits[(chat_id, user.id)]
+            if hits >= 3:
+                try:
+                    verb = await do_action("mute", chat_id, user.id, context, seconds=86400)
+                    await context.bot.send_message(
+                        chat_id,
+                        f"🛡️ {mention(user)} {verb} — repeated scam attempts "
+                        f"({reason}). Stay safe, fam. ⚡", parse_mode=ParseMode.HTML)
+                except BadRequest:
+                    pass
+            else:
+                try:
+                    await context.bot.send_message(
+                        chat_id,
+                        "🛡️ <b>Auto-Guard removed a likely scam</b> "
+                        f"({esc(reason)}).\n⚠️ Admins NEVER DM first. Only ever use the "
+                        "official CA from /ca. Never share your seed phrase. ⚡",
+                        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                except BadRequest:
+                    pass
+            return
     limit = s["flood_limit"]
     if limit and limit > 0:
         dq = flood_tracker[(chat_id, user.id)]
@@ -4929,6 +5062,103 @@ async def _run_filters(update, msg, chat_id):
                     pass  # fall back to plain below
             await safe_reply(msg, reply)
             return
+    # No custom filter matched — try Auto-FAQ (if enabled)
+    await _autofaq(update, msg, chat_id)
+
+
+# --- Auto-FAQ: the group answers common questions itself, 24/7 -------------
+_faq_cooldown = {}  # (chat_id, intent) -> last reply timestamp
+_FAQ_COOLDOWN_SECS = 75
+
+
+def _autofaq_intent(text):
+    t = (text or "").lower().strip()
+    if not t or len(t) > 200:
+        return None
+    is_q = ("?" in t) or bool(re.match(
+        r"^(how|what|where|when|is|are|can|could|does|do|why|who|anyone know)\b", t))
+    if re.search(r"\bhow\b.{0,14}\bbuy\b|where.{0,10}\bbuy\b|how.{0,10}\bpurchase\b", t):
+        return "buy"
+    if is_q and re.search(r"\bcontract address\b|\bcontract\b|\bwhat'?s the ca\b|\bca\?\b", t):
+        return "ca"
+    if is_q and re.search(r"\bprice\b|\bmarket ?cap\b|\bmcap\b|\bmc\b", t):
+        return "price"
+    if is_q and re.search(r"\bchart\b|\bdexscreener\b", t):
+        return "chart"
+    if is_q and re.search(r"\b(scam|rug|legit|safe|safu|trust)\b", t):
+        return "safe"
+    if is_q and re.search(r"\bwhitepaper\b|\bwhite paper\b", t):
+        return "wp"
+    if is_q and re.search(r"\bsocials?\b|\btwitter\b|\bwebsite\b|\binstagram\b", t):
+        return "socials"
+    if re.search(r"\bwhen\b.{0,6}\b(moon|pump|lambo|ath|listing)\b", t):
+        return "moon"
+    return None
+
+
+async def _autofaq(update, msg, chat_id):
+    try:
+        if not db.get_settings(chat_id)["autofaq_on"]:
+            return
+    except Exception:  # noqa: BLE001
+        return
+    intent = _autofaq_intent(msg.text)
+    if not intent:
+        return
+    now = time.time()
+    key = (chat_id, intent)
+    if now - _faq_cooldown.get(key, 0) < _FAQ_COOLDOWN_SECS:
+        return  # don't spam the same answer repeatedly
+    _faq_cooldown[key] = now
+    kbd = globals().get("_buy_keyboard")
+    try:
+        if intent in ("buy", "ca"):
+            await msg.reply_text(_ca_text(), parse_mode=ParseMode.HTML,
+                                 reply_markup=kbd() if kbd else None,
+                                 disable_web_page_preview=True)
+        elif intent == "price":
+            txt = await _fetch_price_text()
+            await msg.reply_text(txt or "📊 Check the live chart for the latest price ⚡",
+                                 parse_mode=ParseMode.HTML,
+                                 reply_markup=InlineKeyboardMarkup([[
+                                     InlineKeyboardButton("📊 Chart", url=CHART),
+                                     InlineKeyboardButton("🪐 Buy", url=JUPITER)]]),
+                                 disable_web_page_preview=True)
+        elif intent == "chart":
+            await msg.reply_text(
+                "📊 <b>⚡ZAPP Chart</b>", parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📊 Chart", url=CHART),
+                    InlineKeyboardButton("🪐 Buy", url=JUPITER)]]))
+        elif intent == "safe":
+            await msg.reply_text(
+                "✅ <b>Staying safe with ⚡ZAPP</b>\n"
+                "• Only ever use the official CA (below) — verify before buying\n"
+                "• Admins will <b>NEVER</b> DM you first\n"
+                "• Never share your seed phrase or connect your wallet to random links\n\n"
+                f"<code>{esc(CA)}</code>\n∞ 3 · 6 · 9 ∞",
+                parse_mode=ParseMode.HTML, reply_markup=kbd() if kbd else None,
+                disable_web_page_preview=True)
+        elif intent == "wp":
+            await msg.reply_text(
+                "📄 <b>⚡ZAPP Whitepaper</b>", parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📄 Read the Whitepaper", url=WHITEPAPER)]]))
+        elif intent == "socials":
+            await msg.reply_text(
+                "📣 <b>⚡ZAPP Socials</b>", parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+                     InlineKeyboardButton("𝕏 Twitter", url=TWITTER)],
+                    [InlineKeyboardButton("💬 Telegram", url=TELEGRAM)]]),
+                disable_web_page_preview=True)
+        elif intent == "moon":
+            await msg.reply_text(random.choice([
+                "🚀 Soon™ — the current builds quietly. Stack, hold, spread the signal. ⚡",
+                "🌙 When the frequency aligns. 3 · 6 · 9. Keep charging. ⚡",
+                "📈 No one rings a bell at the bottom. Stay plugged in. ⚡"]))
+    except BadRequest:
+        pass
 
 
 def register_watcher(app):
