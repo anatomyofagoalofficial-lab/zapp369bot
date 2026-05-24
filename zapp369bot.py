@@ -173,6 +173,14 @@ def init_db():
                 name TEXT, won_at INTEGER,
                 PRIMARY KEY (chat_id, target)
             );
+            CREATE TABLE IF NOT EXISTS winners (
+                chat_id INTEGER, user_id INTEGER, name TEXT, won_at INTEGER,
+                PRIMARY KEY (chat_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS reached369 (
+                chat_id INTEGER, user_id INTEGER, target INTEGER, at INTEGER,
+                PRIMARY KEY (chat_id, user_id, target)
+            );
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, user_id INTEGER, name TEXT,
@@ -1478,30 +1486,53 @@ async def check_milestone(context, chat_id, uid, total, name=None):
     target, lock them in (race-safe) and announce. Fires at most once per chat."""
     if total is None or total < MILESTONE_TARGET:
         return
-    # already have a winner? cheap early exit
-    existing = db.query("SELECT user_id FROM milestone WHERE chat_id=? AND target=?",
-                        (chat_id, MILESTONE_TARGET), one=True)
-    if existing:
+    current_winner = db.query("SELECT user_id FROM milestone WHERE chat_id=? AND target=?",
+                              (chat_id, MILESTONE_TARGET), one=True)
+    past_winner = db.query("SELECT 1 FROM winners WHERE chat_id=? AND user_id=?",
+                           (chat_id, uid), one=True)
+
+    # FIRST to reach this round (no round winner yet, not a past champion) -> CROWN
+    if not current_winner and not past_winner:
+        db.execute(
+            "INSERT OR IGNORE INTO milestone (chat_id,target,user_id,name,won_at) "
+            "VALUES (?,?,?,?,?)",
+            (chat_id, MILESTONE_TARGET, uid, name, int(time.time())))
+        row = db.query("SELECT user_id FROM milestone WHERE chat_id=? AND target=?",
+                       (chat_id, MILESTONE_TARGET), one=True)
+        if row and row["user_id"] == uid:
+            db.execute("INSERT OR IGNORE INTO winners (chat_id,user_id,name,won_at) "
+                       "VALUES (?,?,?,?)", (chat_id, uid, name, int(time.time())))
+            db.execute("INSERT OR IGNORE INTO reached369 (chat_id,user_id,target,at) "
+                       "VALUES (?,?,?,?)", (chat_id, uid, MILESTONE_TARGET, int(time.time())))
+            try:
+                await context.bot.send_message(
+                    chat_id,
+                    "🏆⚡ <b>WE HAVE A WINNER!</b> ⚡🏆\n\n"
+                    f"{mention_id(uid, name)} is the <b>FIRST to reach "
+                    f"{MILESTONE_TARGET} points!</b> 🎉\n"
+                    "The 3 · 6 · 9 frequency chose you. ⚡\n\n"
+                    "🎁 An admin will be in touch with your reward.\n\n"
+                    "Think you're next? /spin daily, play /tasks, keep the chat "
+                    "charged. /top to see where you stand. 🔌\n\n"
+                    "∞ Free Energy = Free Money ∞\n⚡ZAPP",
+                    parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+    # everyone else who reaches 369 -> "369 Club" shoutout, once per person
+    seen = db.query("SELECT 1 FROM reached369 WHERE chat_id=? AND user_id=? AND target=?",
+                    (chat_id, uid, MILESTONE_TARGET), one=True)
+    if seen:
         return
-    # race-safe claim: PK on (chat_id,target) means only the first INSERT sticks
-    db.execute(
-        "INSERT OR IGNORE INTO milestone (chat_id,target,user_id,name,won_at) "
-        "VALUES (?,?,?,?,?)",
-        (chat_id, MILESTONE_TARGET, uid, name, int(time.time())))
-    row = db.query("SELECT user_id FROM milestone WHERE chat_id=? AND target=?",
-                   (chat_id, MILESTONE_TARGET), one=True)
-    if not row or row["user_id"] != uid:
-        return  # someone else already claimed it
+    db.execute("INSERT OR IGNORE INTO reached369 (chat_id,user_id,target,at) "
+               "VALUES (?,?,?,?)", (chat_id, uid, MILESTONE_TARGET, int(time.time())))
     try:
         await context.bot.send_message(
             chat_id,
-            "🏆⚡ <b>WE HAVE A WINNER!</b> ⚡🏆\n\n"
-            f"{mention_id(uid)} is the <b>FIRST to reach {MILESTONE_TARGET} points!</b> 🎉\n"
-            "The 3 · 6 · 9 frequency chose you. ⚡\n\n"
-            "🎁 An admin will be in touch with your reward.\n\n"
-            "Think you're next? Spin daily with /spin, play /trivia, and keep the "
-            "chat charged to climb the ranks. /top to see where you stand. 🔌\n\n"
-            "∞ Free Energy = Free Money ∞\n⚡ZAPP",
+            f"🎉⚡ {mention_id(uid, name)} just reached <b>{MILESTONE_TARGET} points</b> — "
+            "welcome to the <b>369 Club!</b> 🔌\n"
+            "The frequency is strong with this one. /top\n∞ 3 · 6 · 9 ∞",
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:  # noqa: BLE001
         pass
@@ -1542,9 +1573,49 @@ async def resetmilestone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = target_chat(update)
     db.execute("DELETE FROM milestone WHERE chat_id=? AND target=?",
                (chat_id, MILESTONE_TARGET))
+    hof = db.query("SELECT COUNT(*) c FROM winners WHERE chat_id=?", (chat_id,), one=True)
+    n = hof["c"] if hof else 0
     await update.effective_message.reply_text(
         f"🔄 <b>Race to {MILESTONE_TARGET} reset!</b> A new round is live — "
-        "first to 369 wins. ⚡", parse_mode=ParseMode.HTML)
+        "first NEW member to 369 wins. ⚡\n"
+        f"🏆 Past winners ({n}) can't win again — see /winners.\n"
+        "(To wipe scores for a full fresh season, use /resetpoints first.)",
+        parse_mode=ParseMode.HTML)
+
+
+@group_only
+async def winners_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the Race to 369 Hall of Fame."""
+    chat_id = target_chat(update)
+    rows = db.query("SELECT user_id,name,won_at FROM winners WHERE chat_id=? "
+                    "ORDER BY won_at ASC LIMIT 50", (chat_id,))
+    if not rows:
+        await update.effective_message.reply_text(
+            "🏆 <b>Hall of Fame</b>\nNo champions yet — be the first to reach "
+            f"{MILESTONE_TARGET} points! /milestone", parse_mode=ParseMode.HTML)
+        return
+    lines = ["🏆 <b>⚡ZAPP Hall of Fame</b> — Race to 369 champions:\n"]
+    medals = ["🥇", "🥈", "🥉"]
+    for i, r in enumerate(rows):
+        tag = medals[i] if i < 3 else f"{i + 1}."
+        who = esc(r["name"]) if r["name"] else mention_id(r["user_id"])
+        lines.append(f"{tag} {who}")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+@group_only
+@admin_only
+async def clearhof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Wipe the Hall of Fame (lets everyone be eligible again)."""
+    chat_id = target_chat(update)
+    db.execute("DELETE FROM winners WHERE chat_id=?", (chat_id,))
+    db.execute("DELETE FROM milestone WHERE chat_id=? AND target=?",
+               (chat_id, MILESTONE_TARGET))
+    db.execute("DELETE FROM reached369 WHERE chat_id=?", (chat_id,))
+    await update.effective_message.reply_text(
+        "🧹 Hall of Fame cleared — everyone is eligible for the Race to 369 again. ⚡",
+        parse_mode=ParseMode.HTML)
 
 
 def _today():
@@ -1854,6 +1925,8 @@ def register_points(app):
     app.add_handler(CommandHandler(["top", "leaderboard", "lb"], top))
     app.add_handler(CommandHandler(["milestone", "race", "race369"], milestone))
     app.add_handler(CommandHandler("resetmilestone", resetmilestone))
+    app.add_handler(CommandHandler(["winners", "halloffame", "hof"], winners_cmd))
+    app.add_handler(CommandHandler("clearhof", clearhof))
     app.add_handler(CommandHandler(["addpoints", "givepoints"], addpoints))
     app.add_handler(CommandHandler(["give", "reward"], give))
     app.add_handler(CallbackQueryHandler(give_cb, pattern=r"^gp:-?\d+:-?\d+$"))
@@ -2075,13 +2148,39 @@ from telegram.ext import CommandHandler, ContextTypes
 
 # --------------------------- START / HELP ----------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎰 Spin", callback_data="game:spin"),
+         InlineKeyboardButton("🔮 Fortune", callback_data="game:fortune")],
+        [InlineKeyboardButton("✊ Rock Paper Scissors", callback_data="game:rps")],
+        [InlineKeyboardButton("🪙 Flip", callback_data="game:flip"),
+         InlineKeyboardButton("🎲 Roll", callback_data="game:roll"),
+         InlineKeyboardButton("🎯 Dart", callback_data="game:dart")],
+        [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("𝕏 Twitter", url=TWITTER)],
+    ])
     await update.effective_message.reply_text(
         f"{BRAND}  <i>v{__version__}</i>\n\n"
-        "I'm your group's guardian — moderation, anti-spam, welcomes, federations and more.\n\n"
-        "➕ Add me to a group and make me <b>admin</b>.\n"
-        "📖 <code>/help</code> for the full command list.\n\n"
-        "<i>3·6·9 ∞</i>",
-        parse_mode=ParseMode.HTML)
+        "⚡ Welcome to the ⚡ZAPP arcade! Tap a game to play 👇\n\n"
+        "🎰 <b>Spin</b> — slot machine, 3/day, win points\n"
+        "🔮 <b>Fortune</b> · ✊ <b>RPS</b> · 🪙 <b>Flip</b> · 🎲 <b>Roll</b> · 🎯 <b>Dart</b>\n\n"
+        "More: /tasks (earn by sharing) · /trivia · /top · /milestone\n"
+        "📖 <code>/help</code> for everything.\n\n"
+        "<i>∞ 3 · 6 · 9 ∞</i>",
+        parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
+
+
+async def game_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Route /start menu game buttons to the matching game handlers."""
+    q = update.callback_query
+    action = q.data.split(":", 1)[1]
+    await q.answer()
+    handlers = {
+        "spin": spin, "fortune": fortune, "rps": rps,
+        "flip": flip, "roll": roll, "dart": dart,
+    }
+    fn = handlers.get(action)
+    if fn:
+        await fn(update, context)
 
 
 HELP_TEXT = (
@@ -2091,7 +2190,7 @@ HELP_TEXT = (
     "<code>/price /ca /chart /whitepaper /socials /website /stats</code>\n\n"
     "<b>🏆 Earn &amp; Games</b>\n"
     "<code>/points /top</code> — score &amp; leaderboard  •  <code>/milestone</code> — Race to 369\n"
-    "<code>/spin</code> daily slot  •  <code>/trivia</code> quiz  •  <code>/tasks</code> earn by sharing\n"
+    "<code>/winners</code> — Hall of Fame  •  <code>/spin</code> daily slot  •  <code>/trivia</code> quiz <i>(admins start)</i>\n"
     "<code>/submit &lt;type&gt;</code> (reply to proof) — shill-to-earn\n"
     "<code>/flip /roll /dart /basket /8ball /rate</code>\n\n"
     "<b>🌐 Tools</b>\n"
@@ -2404,6 +2503,7 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register_extras(app):
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(game_cb, pattern=r"^game:"))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("afk", afk))
     app.add_handler(CommandHandler("approve", approve))
@@ -4099,6 +4199,7 @@ _active_trivia = {}
 
 
 @group_only
+@admin_only
 async def trivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     q, opts, correct = random.choice(_TRIVIA)
