@@ -283,6 +283,7 @@ def new_fed_id():
 db = _types.SimpleNamespace(
     init_db=init_db, query=query, execute=execute,
     get_settings=get_settings, set_setting=set_setting, new_fed_id=new_fed_id,
+    _conn=_conn,
 )
 
 
@@ -4851,11 +4852,13 @@ async def submit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                              "let admins catch up first. 🙏")
         return
     name = user.first_name or "member"
-    db.execute(
-        "INSERT INTO submissions (chat_id,user_id,name,task,reward,status,created) "
-        "VALUES (?,?,?,?,?, 'pending', ?)",
-        (chat_id, user.id, name, taskkey, reward, int(time.time())))
-    sid = db.query("SELECT last_insert_rowid() id", one=True)["id"]
+    with db._conn() as _c:
+        cur = _c.execute(
+            "INSERT INTO submissions (chat_id,user_id,name,task,reward,status,created) "
+            "VALUES (?,?,?,?,?, 'pending', ?)",
+            (chat_id, user.id, name, taskkey, reward, int(time.time())))
+        sid = cur.lastrowid
+        _c.commit()
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Approve", callback_data=f"sub:ok:{sid}"),
         InlineKeyboardButton("❌ Reject", callback_data=f"sub:no:{sid}"),
