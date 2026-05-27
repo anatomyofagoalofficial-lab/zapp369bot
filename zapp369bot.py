@@ -120,6 +120,9 @@ def init_db():
                 autopost_on INTEGER DEFAULT 0,
                 autopost_tz TEXT DEFAULT 'Europe/Zurich',
                 autopost_thread INTEGER,
+                autotrivia_on INTEGER DEFAULT 0,
+                autotrivia_tz TEXT DEFAULT 'Europe/Zurich',
+                autotrivia_thread INTEGER,
                 games_thread INTEGER,
                 autoguard_on INTEGER DEFAULT 0,
                 autofaq_on INTEGER DEFAULT 0
@@ -226,6 +229,9 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN autopost_on INTEGER DEFAULT 0",
             "ALTER TABLE settings ADD COLUMN autopost_tz TEXT DEFAULT 'Europe/Zurich'",
             "ALTER TABLE settings ADD COLUMN autopost_thread INTEGER",
+            "ALTER TABLE settings ADD COLUMN autotrivia_on INTEGER DEFAULT 0",
+            "ALTER TABLE settings ADD COLUMN autotrivia_tz TEXT DEFAULT 'Europe/Zurich'",
+            "ALTER TABLE settings ADD COLUMN autotrivia_thread INTEGER",
             "ALTER TABLE daily_use ADD COLUMN count INTEGER DEFAULT 0",
             "ALTER TABLE settings ADD COLUMN games_thread INTEGER",
             "ALTER TABLE settings ADD COLUMN autoguard_on INTEGER DEFAULT 0",
@@ -3859,7 +3865,7 @@ async def raid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------- AUTO-POSTS ------------------------------------
 # Daily scheduled messages. Times are 6am, 12pm, 3pm, 6pm, 9pm (3·6·9 themed).
 AUTOPOST_SLOTS = [
-    ("morning", 6, 0),
+    ("morning", 9, 0),
     ("noon", 12, 0),
     ("three", 15, 0),
     ("six", 18, 0),
@@ -4254,6 +4260,27 @@ async def basket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("🏀")
 
 
+@games_only
+async def football(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⚽ Penalty shot — native football dice. Values 3/4/5 = GOAL."""
+    chat_id = update.effective_chat.id
+    try:
+        msg = await context.bot.send_dice(chat_id, emoji="⚽")
+        # native ⚽ dice: value 1-5; 3,4,5 count as a goal in Telegram's animation
+        val = msg.dice.value if msg and msg.dice else 0
+        goal = val >= 3
+        await asyncio.sleep(3)  # let the animation finish before the verdict
+        if goal:
+            await update.effective_message.reply_text(
+                "⚽ <b>GOOOAL!</b> ⚡ Back of the net! 🥅", parse_mode=ParseMode.HTML)
+        else:
+            await update.effective_message.reply_text(
+                "🧤 <b>SAVED!</b> The keeper denies you — try again ⚡",
+                parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        await update.effective_message.reply_text("⚽")
+
+
 _8BALL = [
     "Yes. ⚡", "Absolutely.", "No doubt about it.", "The signal says yes.",
     "Ask again later.", "Hmm... unclear.", "Don't count on it.", "No.",
@@ -4380,7 +4407,158 @@ async def trivia_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _check_milestone(context, chat_id, user.id, total, user.first_name)
 
 
-# --------------------------- gm / gn culture -------------------------------
+# --------------------------- AUTO-TRIVIA (scheduled) -----------------------
+# Posts a trivia question automatically at 9am, 12pm, 3pm, 6pm, 9pm.
+# Routes to a chosen channel/topic (e.g. Contests & Giveaways), leaving General alone.
+AUTOTRIVIA_SLOTS = [
+    ("t9", 9, 0),
+    ("t12", 12, 0),
+    ("t15", 15, 0),
+    ("t18", 18, 0),
+    ("t21", 21, 0),
+]
+
+
+async def _post_trivia(context, chat_id, thread=None):
+    """Post one trivia round to chat_id (optionally in a forum topic/thread)."""
+    q, opts, correct = random.choice(_TRIVIA)
+    letters = ["🅰️", "🅱️", "🇨", "🇩"]
+    kb = [[InlineKeyboardButton(f"{letters[i]} {opts[i]}",
+                                callback_data=f"trv:{i}")] for i in range(len(opts))]
+    kwargs = {"parse_mode": ParseMode.HTML,
+              "reply_markup": InlineKeyboardMarkup(kb)}
+    if thread:
+        kwargs["message_thread_id"] = thread
+    try:
+        m = await context.bot.send_message(
+            chat_id,
+            f"🧠 <b>ZAPP Trivia</b> ⚡\n\n{q}\n\nFirst correct answer wins <b>9</b> points ⚡",
+            **kwargs)
+    except Exception:  # noqa: BLE001
+        return
+    _active_trivia[chat_id] = {"answer": correct, "msg_id": m.message_id,
+                               "solved": False, "q": q, "opts": opts}
+    # auto-reveal the answer after 5 minutes if nobody got it
+    if context.job_queue:
+        context.job_queue.run_once(
+            _trivia_reveal_job, 300,
+            data={"chat_id": chat_id, "msg_id": m.message_id},
+            name=f"trvreveal_{chat_id}_{m.message_id}")
+
+
+async def _trivia_reveal_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    msg_id = data.get("msg_id")
+    state = _active_trivia.get(chat_id)
+    if not state or state["msg_id"] != msg_id or state["solved"]:
+        return
+    state["solved"] = True
+    right = state["opts"][state["answer"]]
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id, message_id=msg_id,
+            text=(f"🧠 <b>ZAPP Trivia</b> ⚡\n\n{state['q']}\n\n"
+                  f"⏰ Time's up! Answer: <b>{esc(right)}</b>\n"
+                  f"Next round soon — stay charged ⚡"),
+            parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _autotrivia_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    if chat_id is None:
+        return
+    s = db.get_settings(chat_id)
+    if not s["autotrivia_on"]:
+        return
+    await _post_trivia(context, chat_id, s["autotrivia_thread"])
+
+
+def schedule_autotrivia(app, chat_id):
+    """(Re)schedule the 5 daily auto-trivia rounds for one chat."""
+    jq = app.job_queue
+    if not jq:
+        return
+    for slot, _h, _m in AUTOTRIVIA_SLOTS:
+        for j in jq.get_jobs_by_name(f"at_{chat_id}_{slot}"):
+            j.schedule_removal()
+    s = db.get_settings(chat_id)
+    if not s["autotrivia_on"]:
+        return
+    tz = _ap_tz(s["autotrivia_tz"] or "Europe/Zurich")
+    for slot, h, m in AUTOTRIVIA_SLOTS:
+        t = dtime(h, m, tzinfo=tz) if tz else dtime(h, m)
+        jq.run_daily(_autotrivia_job, t, data={"chat_id": chat_id, "slot": slot},
+                     name=f"at_{chat_id}_{slot}")
+
+
+def reschedule_autotrivia(app):
+    try:
+        rows = db.query("SELECT chat_id FROM settings WHERE autotrivia_on=1")
+    except Exception:  # noqa: BLE001
+        rows = []
+    for r in rows:
+        schedule_autotrivia(app, r["chat_id"])
+
+
+@group_only
+@admin_only
+async def autotrivia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    msg = update.effective_message
+    args = [a for a in context.args]
+    sub = args[0].lower() if args else "status"
+    s = db.get_settings(chat_id)
+
+    if sub in ("on", "here"):
+        db.set_setting(chat_id, "autotrivia_on", 1)
+        thread = getattr(msg, "message_thread_id", None)
+        db.set_setting(chat_id, "autotrivia_thread", thread)
+        schedule_autotrivia(context.application, chat_id)
+        where = "this topic" if thread else "the group (General)"
+        await msg.reply_text(
+            f"🧠 <b>Auto-trivia ON</b> ⚡\nRounds at <b>9am, 12pm, 3pm, 6pm, 9pm</b> "
+            f"({s['autotrivia_tz'] or 'Europe/Zurich'}) in {where}.\n"
+            "Run this inside your Contests &amp; Giveaways topic to post there.\n"
+            "Change zone: /autotrivia tz Europe/London\nTry one now: /autotrivia test",
+            parse_mode=ParseMode.HTML)
+        return
+    if sub == "off":
+        db.set_setting(chat_id, "autotrivia_on", 0)
+        schedule_autotrivia(context.application, chat_id)
+        await msg.reply_text("🧠 Auto-trivia <b>OFF</b>.", parse_mode=ParseMode.HTML)
+        return
+    if sub == "tz" and len(args) >= 2:
+        tzname = args[1]
+        if _ap_tz(tzname) is None and ZoneInfo is not None:
+            await msg.reply_text(
+                "❓ Unknown timezone. Use e.g. <code>Europe/Zurich</code> or <code>UTC</code>.",
+                parse_mode=ParseMode.HTML)
+            return
+        db.set_setting(chat_id, "autotrivia_tz", tzname)
+        if s["autotrivia_on"]:
+            schedule_autotrivia(context.application, chat_id)
+        await msg.reply_text(f"🕒 Auto-trivia timezone set to <b>{tzname}</b>.",
+                             parse_mode=ParseMode.HTML)
+        return
+    if sub == "test":
+        thread = getattr(msg, "message_thread_id", None)
+        await _post_trivia(context, chat_id, thread)
+        return
+
+    state = "ON ✅" if s["autotrivia_on"] else "OFF"
+    await msg.reply_text(
+        f"🧠 <b>Auto-trivia:</b> {state}\n"
+        f"🕒 Times: 9am, 12pm, 3pm, 6pm, 9pm ({s['autotrivia_tz'] or 'Europe/Zurich'})\n\n"
+        "Commands:\n"
+        "/autotrivia here — enable in THIS topic/channel\n"
+        "/autotrivia off — disable\n"
+        "/autotrivia tz &lt;Zone&gt; — set timezone\n"
+        "/autotrivia test — post one round now",
+        parse_mode=ParseMode.HTML)
 async def greet_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or not msg.text:
@@ -4816,6 +4994,8 @@ def register_fun(app):
     app.add_handler(CommandHandler("roll", roll))
     app.add_handler(CommandHandler("dart", dart))
     app.add_handler(CommandHandler(["basket", "hoop"], basket))
+    app.add_handler(CommandHandler(["football", "penalty", "soccer"], football))
+    app.add_handler(CommandHandler(["autotrivia", "autoquiz"], autotrivia))
     app.add_handler(CommandHandler(["8ball", "eightball"], eightball))
     app.add_handler(CommandHandler("rate", rate))
     app.add_handler(CommandHandler(["rps", "rockpaperscissors"], rps))
@@ -5180,6 +5360,7 @@ async def _on_error(update, context):
 async def _post_init(app):
     reschedule_all(app)
     reschedule_autoposts(app)
+    reschedule_autotrivia(app)
     try:
         await app.bot.set_my_commands([
             ("help", "Show all commands"),
@@ -5194,6 +5375,12 @@ async def _post_init(app):
             ("autopost", "Scheduled daily posts (admin)"),
             ("spin", "Daily slot spin for points"),
             ("trivia", "Play ZAPP trivia for points"),
+            ("football", "⚽ Take a penalty shot"),
+            ("dart", "🎯 Throw a dart"),
+            ("basket", "🏀 Shoot a hoop"),
+            ("flip", "🪙 Flip a coin"),
+            ("rps", "✊ Rock paper scissors"),
+            ("autotrivia", "Scheduled trivia rounds (admin)"),
             ("tr", "Translate a message"),
             ("tasks", "Earn points — social tasks"),
             ("submit", "Submit proof to earn points"),
