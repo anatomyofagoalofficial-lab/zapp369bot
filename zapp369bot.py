@@ -123,6 +123,9 @@ def init_db():
                 autotrivia_on INTEGER DEFAULT 0,
                 autotrivia_tz TEXT DEFAULT 'Europe/Zurich',
                 autotrivia_thread INTEGER,
+                autoleaderboard_on INTEGER DEFAULT 0,
+                autoleaderboard_tz TEXT DEFAULT 'Europe/Zurich',
+                autoleaderboard_thread INTEGER,
                 games_thread INTEGER,
                 autoguard_on INTEGER DEFAULT 0,
                 autofaq_on INTEGER DEFAULT 0
@@ -232,6 +235,9 @@ def init_db():
             "ALTER TABLE settings ADD COLUMN autotrivia_on INTEGER DEFAULT 0",
             "ALTER TABLE settings ADD COLUMN autotrivia_tz TEXT DEFAULT 'Europe/Zurich'",
             "ALTER TABLE settings ADD COLUMN autotrivia_thread INTEGER",
+            "ALTER TABLE settings ADD COLUMN autoleaderboard_on INTEGER DEFAULT 0",
+            "ALTER TABLE settings ADD COLUMN autoleaderboard_tz TEXT DEFAULT 'Europe/Zurich'",
+            "ALTER TABLE settings ADD COLUMN autoleaderboard_thread INTEGER",
             "ALTER TABLE daily_use ADD COLUMN count INTEGER DEFAULT 0",
             "ALTER TABLE settings ADD COLUMN games_thread INTEGER",
             "ALTER TABLE settings ADD COLUMN autoguard_on INTEGER DEFAULT 0",
@@ -2188,38 +2194,60 @@ from telegram.ext import CommandHandler, ContextTypes
 # --------------------------- START / HELP ----------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
+        # Row 1 — featured games
         [InlineKeyboardButton("🎰 Spin", callback_data="game:spin"),
+         InlineKeyboardButton("🧠 Trivia", callback_data="game:trivia"),
          InlineKeyboardButton("🔮 Fortune", callback_data="game:fortune")],
-        [InlineKeyboardButton("✊ Rock Paper Scissors", callback_data="game:rps")],
-        [InlineKeyboardButton("🪙 Flip", callback_data="game:flip"),
-         InlineKeyboardButton("🎲 Roll", callback_data="game:roll"),
+        # Row 2 — sports games
+        [InlineKeyboardButton("⚽ Football", callback_data="game:football"),
+         InlineKeyboardButton("🏀 Basket", callback_data="game:basket"),
          InlineKeyboardButton("🎯 Dart", callback_data="game:dart")],
+        # Row 3 — chance games
+        [InlineKeyboardButton("✊ RPS", callback_data="game:rps"),
+         InlineKeyboardButton("🪙 Flip", callback_data="game:flip"),
+         InlineKeyboardButton("🎲 Roll", callback_data="game:roll")],
+        # Row 4 — your stats
+        [InlineKeyboardButton("🏆 My Points", callback_data="info:points"),
+         InlineKeyboardButton("📊 Leaderboard", callback_data="info:top")],
+        # Row 5 — links
+        [InlineKeyboardButton("💰 Buy ZAPP", callback_data="info:buy"),
+         InlineKeyboardButton("📖 Help", callback_data="info:help")],
+        # Row 6 — externals
         [InlineKeyboardButton("🌐 Website", url=WEBSITE),
          InlineKeyboardButton("𝕏 Twitter", url=TWITTER)],
     ])
     await update.effective_message.reply_text(
         f"{BRAND}  <i>v{__version__}</i>\n\n"
-        "⚡ Welcome to the ⚡ZAPP arcade! Tap a game to play 👇\n\n"
-        "🎰 <b>Spin</b> — slot machine, 3/day, win points\n"
-        "🔮 <b>Fortune</b> · ✊ <b>RPS</b> · 🪙 <b>Flip</b> · 🎲 <b>Roll</b> · 🎯 <b>Dart</b>\n\n"
-        "More: /tasks (earn by sharing) · /trivia · /top · /milestone\n"
-        "📖 <code>/help</code> for everything.\n\n"
+        "⚡ Welcome to the <b>⚡ZAPP arcade</b> ⚡\n"
+        "Tap a game to play, climb the leaderboard, win points 👇\n\n"
+        "🎮 <b>8 games</b> · 🏆 <b>real rewards</b> · ⚡ <b>3·6·9 energy</b>\n\n"
+        "<i>Just chat daily to earn points. Stay charged.</i>\n\n"
         "<i>∞ 3 · 6 · 9 ∞</i>",
         parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True)
 
 
 async def game_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Route /start menu game buttons to the matching game handlers."""
+    """Route /start menu game + info buttons to the matching handlers."""
     q = update.callback_query
     action = q.data.split(":", 1)[1]
+    kind = q.data.split(":", 1)[0]
     await q.answer()
-    handlers = {
-        "spin": spin, "fortune": fortune, "rps": rps,
-        "flip": flip, "roll": roll, "dart": dart,
-    }
-    fn = handlers.get(action)
-    if fn:
-        await fn(update, context)
+    if kind == "game":
+        handlers = {
+            "spin": spin, "fortune": fortune, "rps": rps,
+            "flip": flip, "roll": roll, "dart": dart,
+            "basket": basket, "football": football, "trivia": trivia,
+        }
+        fn = handlers.get(action)
+        if fn:
+            await fn(update, context)
+    elif kind == "info":
+        info_handlers = {
+            "points": points, "top": top, "buy": buy, "help": help_cmd,
+        }
+        fn = info_handlers.get(action)
+        if fn:
+            await fn(update, context)
 
 
 @group_only
@@ -2255,46 +2283,87 @@ async def cleargamestopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 HELP_TEXT = (
-    f"{BRAND} <b>— Command Guide</b>\n\n"
-    "<b>⚡ Token &amp; Buying</b>\n"
-    "<code>/buy</code> — CA + all buy links  •  <code>/trade</code> — buy inside Telegram\n"
-    "<code>/price /ca /chart /whitepaper /socials /website /stats</code>\n\n"
-    "<b>🏆 Earn &amp; Games</b>\n"
-    "<code>/points /top</code> — score &amp; leaderboard  •  <code>/milestone</code> — Race to 369\n"
-    "<code>/winners</code> — Hall of Fame  •  <code>/spin</code> daily slot  •  <code>/trivia</code> quiz <i>(admins start)</i>\n"
-    "<code>/submit &lt;type&gt;</code> (reply to proof) — shill-to-earn\n"
-    "<code>/flip /roll /dart /basket /8ball /rate</code>\n\n"
-    "<b>🌐 Tools</b>\n"
-    "<code>/tr</code> translate (reply to a message, or <code>/tr es hello</code>)  •  say <i>gm/gn</i>\n\n"
-    "<b>🛡 Moderation</b> <i>(admins)</i>\n"
-    "<code>/ban /unban /kick /mute /unmute</code> — reply or @user; add <code>30m 2h 1d</code> for temp\n"
-    "<code>/promote /demote /pin /unpin /purge /del</code>\n\n"
-    "<b>⚠️ Warnings</b> <i>(admins)</i>\n"
-    "<code>/warn /unwarn /warns /resetwarns /setwarnlimit /setwarnaction</code>\n\n"
-    "<b>🔒 Protection</b> <i>(admins)</i>\n"
-    "<code>/godmode</code> — one-tap max security 🛡️\n"
-    "<code>/lock /unlock /locks /setflood /flood /antiraid /nightmode</code>\n"
-    "<code>/addblocklist /blocklists /unblocklist /blocklistaction</code>\n\n"
-    "<b>🎁 Rewards</b> <i>(admins)</i>\n"
-    "<code>/give</code> (reply) — tap to reward points  •  <code>/pending /approve /reject</code>\n"
-    "<code>/addpoints /setpoints /resetpoints /resetmilestone</code>\n\n"
-    "<b>👋 Greetings</b> <i>(admins)</i>\n"
-    "<code>/setwelcome /welcome /setgoodbye /goodbye /cleanservice /captcha</code>\n"
-    "<code>/setwelcomeimage /setrulesimage /setbuyimage</code> (reply to a photo)\n\n"
-    "<b>📝 Content</b> <i>(admins)</i>\n"
-    "<code>/save /get /notes /clear</code> (or <code>#note</code>)  •  <code>/filter /filters /stop</code>\n"
-    "<code>/setrules /rules /about /setabout</code>\n\n"
-    "<b>⏰ Auto-posts &amp; Raids</b> <i>(admins)</i>\n"
-    "<code>/autopost on|off|tz|test</code> — daily posts (6am,12,3,6,9pm)  •  <code>/raid</code>\n\n"
-    "<b>🌐 Federations &amp; Extras</b> <i>(admins)</i>\n"
-    "<code>/newfed /joinfed /fedban /fedinfo</code>  •  <code>/all</code> (tag everyone)\n"
-    "<code>/approve /connect /disable /enable /setlog /settings /id /report</code>\n"
+    f"{BRAND} <b>— What I can do</b>\n\n"
+    "<b>💰 ZAPP &amp; Buying</b>\n"
+    "/buy — contract + all buy links\n"
+    "/price · /ca · /chart · /whitepaper\n"
+    "/website · /socials · /stats\n\n"
+    "<b>🎮 Games &amp; Fun</b>\n"
+    "/spin — slot machine (3/day) 🎰\n"
+    "/trivia — answer to earn +9 points 🧠\n"
+    "/football ⚽ · /basket 🏀 · /dart 🎯\n"
+    "/rps · /flip · /roll · /fortune\n"
+    "/8ball [question] — magic 8-ball\n"
+    "/rate [thing] — rate out of 10\n"
+    "Say <i>gm</i> or <i>gn</i> — I greet you back ⚡\n\n"
+    "<b>🏆 Points &amp; Ranks</b>\n"
+    "/points — your points + rank + streak\n"
+    "/top — the leaderboard\n"
+    "/milestone — Race to 369\n"
+    "/winners — Hall of Fame\n"
+    "<i>Tip: chat daily, keep your streak alive, climb the ranks.</i>\n\n"
+    "<b>✨ Earn More</b>\n"
+    "/tasks — earn-by-sharing quests\n"
+    "/submit &lt;type&gt; — submit proof (reply to your screenshot)\n\n"
+    "<b>🛠 Tools</b>\n"
+    "/tr — translate (reply to a message)\n"
+    "/afk — set yourself away\n"
+    "/report — alert admins (reply to a message)\n\n"
+    "<i>Admins: see /adminhelp for moderation commands.</i>\n\n"
+    "⚡ <i>∞ 3 · 6 · 9 ∞</i>"
+)
+
+ADMIN_HELP_TEXT = (
+    f"{BRAND} <b>— Admin toolkit</b>\n\n"
+    "<b>🛡 Moderation</b>\n"
+    "/ban · /unban · /kick · /mute · /unmute (reply or @user; add <code>30m 2h 1d</code> for temp)\n"
+    "/promote · /demote · /pin · /unpin · /purge · /del\n\n"
+    "<b>⚠️ Warnings</b>\n"
+    "/warn · /unwarn · /warns · /resetwarns · /setwarnlimit · /setwarnaction\n\n"
+    "<b>🔒 Protection</b>\n"
+    "/godmode — one-tap max security 🛡️\n"
+    "/lock · /unlock · /locks · /setflood · /flood · /antiraid · /nightmode\n"
+    "/addblocklist · /blocklists · /unblocklist · /blocklistaction\n\n"
+    "<b>🎁 Rewards</b>\n"
+    "/give (reply) — quick-tap reward buttons\n"
+    "/addpoints @user N · /setpoints · /resetpoints · /resetmilestone\n"
+    "/pending · /approve · /reject — submission queue\n\n"
+    "<b>👋 Greetings</b>\n"
+    "/setwelcome · /welcome · /setgoodbye · /goodbye · /cleanservice · /captcha\n"
+    "/setwelcomeimage · /setrulesimage · /setbuyimage (reply to a photo)\n"
+    "/testwelcome — preview the welcome\n\n"
+    "<b>📝 Content</b>\n"
+    "/save · /get · /notes · /clear (or <code>#note</code>)\n"
+    "/filter · /filters · /stop\n"
+    "/setrules · /rules · /about · /setabout\n\n"
+    "<b>⏰ Auto-posts &amp; Trivia</b>\n"
+    "/autopost on|off|here|tz|test — daily posts (9am, 12, 3, 6, 9pm)\n"
+    "/autotrivia on|off|here|tz|test — scheduled trivia rounds\n"
+    "/raid — start a raid event\n\n"
+    "<b>🎮 Game Routing</b>\n"
+    "/setgamestopic — lock games to a topic (run inside it)\n"
+    "/cleargamestopic — unlock games everywhere\n\n"
+    "<b>🌐 Federations &amp; System</b>\n"
+    "/newfed · /joinfed · /fedban · /fedinfo\n"
+    "/all — tag everyone\n"
+    "/connect · /disconnect · /connection — manage group from your DM with the bot\n"
+    "/disable · /enable · /setlog · /settings · /id\n"
 )
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML,
                                               disable_web_page_preview=True)
+
+
+async def admin_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(ADMIN_HELP_TEXT, parse_mode=ParseMode.HTML,
+                                              disable_web_page_preview=True)
+
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bring up the /start menu anywhere."""
+    await start(update, context)
 
 
 # --------------------------- AFK -------------------------------------------
@@ -2405,8 +2474,48 @@ async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pm_connections.pop(update.effective_user.id, None)
-    await update.effective_message.reply_text("🔌 Disconnected.")
+    user_id = update.effective_user.id
+    prev = pm_connections.pop(user_id, None)
+    if prev is None:
+        await update.effective_message.reply_text(
+            "🔌 You weren't connected to anything. Use /connect &lt;group_id&gt; "
+            "in DM, or /connect inside the group itself.", parse_mode=ParseMode.HTML)
+        return
+    try:
+        chat = await context.bot.get_chat(prev)
+        title = esc(chat.title or str(prev))
+    except BadRequest:
+        title = str(prev)
+    await update.effective_message.reply_text(
+        f"🔌 Disconnected from <b>{title}</b>. Run /connect &lt;id&gt; to reconnect.",
+        parse_mode=ParseMode.HTML)
+
+
+async def connection_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the currently connected group (if any)."""
+    user_id = update.effective_user.id
+    chat_id = pm_connections.get(user_id)
+    if chat_id is None:
+        await update.effective_message.reply_text(
+            "🔌 You're not connected to any group right now.\n\n"
+            "<b>How to connect:</b>\n"
+            "• Inside a group you admin: <code>/connect</code>\n"
+            "• Here in DM: <code>/connect &lt;group_id&gt;</code>\n\n"
+            "Use /id inside a group to see its ID.",
+            parse_mode=ParseMode.HTML)
+        return
+    try:
+        chat = await context.bot.get_chat(chat_id)
+        title = esc(chat.title or str(chat_id))
+        link = f"<a href=\"https://t.me/c/{str(chat_id).lstrip('-100')}\">{title}</a>" \
+            if str(chat_id).startswith("-100") else title
+    except BadRequest:
+        link = str(chat_id)
+    await update.effective_message.reply_text(
+        f"🔗 Currently connected to: {link}\n\n"
+        f"All admin commands you run here will apply to that group.\n"
+        f"Run /disconnect to detach.",
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 # --------------------------- DISABLING -------------------------------------
@@ -2578,12 +2687,15 @@ def register_extras(app):
     app.add_handler(CommandHandler(["setgamestopic", "setgameschannel"], setgamestopic))
     app.add_handler(CommandHandler("cleargamestopic", cleargamestopic))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler(["adminhelp", "modhelp"], admin_help_cmd))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("afk", afk))
     app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("unapprove", unapprove))
     app.add_handler(CommandHandler("approved", approved))
     app.add_handler(CommandHandler("connect", connect))
     app.add_handler(CommandHandler("disconnect", disconnect))
+    app.add_handler(CommandHandler(["connection", "connections"], connection_status))
     app.add_handler(CommandHandler("disable", disable))
     app.add_handler(CommandHandler("enable", enable))
     app.add_handler(CommandHandler("disabled", disabled))
@@ -4232,54 +4344,99 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------------------------- quick games -----------------------------------
 @games_only
 async def flip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = target_chat(update)
+    result = random.choice(["HEADS", "TAILS"])
+    points = 1
+    total = _award(chat_id, user, points) if user else None
+    footer = f"\n\n+{points} point → <b>{total:,}</b> ⚡" if total else ""
     await update.effective_message.reply_text(
-        "🪙 " + random.choice(["<b>HEADS</b> ⚡", "<b>TAILS</b> ⚡"]),
-        parse_mode=ParseMode.HTML)
+        f"🪙 <b>{result}</b> ⚡{footer}", parse_mode=ParseMode.HTML)
 
 
 @games_only
 async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = target_chat(update)
     try:
-        await context.bot.send_dice(update.effective_chat.id, emoji="🎲")
+        m = await context.bot.send_dice(update.effective_chat.id, emoji="🎲")
+        val = m.dice.value if m and m.dice else random.randint(1, 6)
     except Exception:  # noqa: BLE001
-        await update.effective_message.reply_text(f"🎲 {random.randint(1, 6)}")
+        val = random.randint(1, 6)
+    await asyncio.sleep(3)
+    points = 6 if val == 6 else (3 if val == 5 else 1)
+    flavor = "🎲 SIX! Lucky charge ⚡" if val == 6 else (
+        "🎲 Five — close to the top ⚡" if val == 5 else f"🎲 Rolled <b>{val}</b> ⚡")
+    total = _award(chat_id, user, points) if user else None
+    footer = f"\n+{points} point{'s' if points != 1 else ''} → <b>{total:,}</b> ⚡" if total else ""
+    await update.effective_message.reply_text(
+        f"{flavor}{footer}", parse_mode=ParseMode.HTML)
 
 
 @games_only
 async def dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = target_chat(update)
     try:
-        await context.bot.send_dice(update.effective_chat.id, emoji="🎯")
+        m = await context.bot.send_dice(update.effective_chat.id, emoji="🎯")
+        val = m.dice.value if m and m.dice else random.randint(1, 6)
     except Exception:  # noqa: BLE001
-        await update.effective_message.reply_text("🎯")
+        val = random.randint(1, 6)
+    await asyncio.sleep(3)
+    if val == 6:
+        flavor, points = "🎯 <b>BULLSEYE!</b> Dead center ⚡", 6
+    elif val >= 4:
+        flavor, points = "🎯 Solid hit on the board ⚡", 3
+    else:
+        flavor, points = "🎯 Off the mark — try again ⚡", 1
+    total = _award(chat_id, user, points) if user else None
+    footer = f"\n+{points} point{'s' if points != 1 else ''} → <b>{total:,}</b> ⚡" if total else ""
+    await update.effective_message.reply_text(
+        f"{flavor}{footer}", parse_mode=ParseMode.HTML)
 
 
 @games_only
 async def basket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = target_chat(update)
     try:
-        await context.bot.send_dice(update.effective_chat.id, emoji="🏀")
+        m = await context.bot.send_dice(update.effective_chat.id, emoji="🏀")
+        val = m.dice.value if m and m.dice else random.randint(1, 5)
     except Exception:  # noqa: BLE001
-        await update.effective_message.reply_text("🏀")
+        val = random.randint(1, 5)
+    await asyncio.sleep(3)
+    # native basket dice: 4 and 5 are made shots
+    if val >= 4:
+        flavor, points = "🏀 <b>SWISH!</b> Nothing but net ⚡", 6
+    elif val == 3:
+        flavor, points = "🏀 Rolls in off the rim ⚡", 3
+    else:
+        flavor, points = "🧤 Brick — off the backboard ⚡", 1
+    total = _award(chat_id, user, points) if user else None
+    footer = f"\n+{points} point{'s' if points != 1 else ''} → <b>{total:,}</b> ⚡" if total else ""
+    await update.effective_message.reply_text(
+        f"{flavor}{footer}", parse_mode=ParseMode.HTML)
 
 
 @games_only
 async def football(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """⚽ Penalty shot — native football dice. Values 3/4/5 = GOAL."""
-    chat_id = update.effective_chat.id
+    user = update.effective_user
+    chat_id = target_chat(update)
     try:
-        msg = await context.bot.send_dice(chat_id, emoji="⚽")
-        # native ⚽ dice: value 1-5; 3,4,5 count as a goal in Telegram's animation
-        val = msg.dice.value if msg and msg.dice else 0
-        goal = val >= 3
-        await asyncio.sleep(3)  # let the animation finish before the verdict
-        if goal:
-            await update.effective_message.reply_text(
-                "⚽ <b>GOOOAL!</b> ⚡ Back of the net! 🥅", parse_mode=ParseMode.HTML)
-        else:
-            await update.effective_message.reply_text(
-                "🧤 <b>SAVED!</b> The keeper denies you — try again ⚡",
-                parse_mode=ParseMode.HTML)
+        m = await context.bot.send_dice(update.effective_chat.id, emoji="⚽")
+        val = m.dice.value if m and m.dice else 0
     except Exception:  # noqa: BLE001
-        await update.effective_message.reply_text("⚽")
+        val = 0
+    await asyncio.sleep(3)
+    goal = val >= 3
+    flavor = ("⚽ <b>GOOOAL!</b> ⚡ Back of the net! 🥅" if goal
+              else "🧤 <b>SAVED!</b> Keeper denies you — try again ⚡")
+    points = 6 if goal else 1
+    total = _award(chat_id, user, points) if user else None
+    footer = f"\n+{points} point{'s' if points != 1 else ''} → <b>{total:,}</b> ⚡" if total else ""
+    await update.effective_message.reply_text(
+        f"{flavor}{footer}", parse_mode=ParseMode.HTML)
 
 
 _8BALL = [
@@ -4503,6 +4660,115 @@ def reschedule_autotrivia(app):
         rows = []
     for r in rows:
         schedule_autotrivia(app, r["chat_id"])
+
+
+# --------------------------- AUTO-LEADERBOARD (weekly) ---------------------
+# Posts the top 10 every Sunday at 21:00 (Europe/Zurich by default).
+async def _autoleaderboard_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    if chat_id is None:
+        return
+    s = db.get_settings(chat_id)
+    if not s["autoleaderboard_on"]:
+        return
+    rows = db.query(
+        "SELECT name, points, streak FROM points WHERE chat_id=? "
+        "ORDER BY points DESC LIMIT 10", (chat_id,))
+    if not rows:
+        return
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, r in enumerate(rows):
+        prefix = medals[i] if i < 3 else f"  {i+1}."
+        streak = f" 🔥{r['streak']}" if r["streak"] else ""
+        lines.append(f"{prefix} <b>{esc(r['name'] or 'anon')}</b> — {r['points']:,} pts{streak}")
+    txt = (
+        "🏆 <b>Weekly ⚡ZAPP Leaderboard</b> 🏆\n\n"
+        + "\n".join(lines)
+        + "\n\n⚡ Keep chatting, keep playing, keep climbing.\n"
+        "<i>Race to the top resets nothing — every point counts.</i>"
+    )
+    kwargs = {"parse_mode": ParseMode.HTML, "disable_web_page_preview": True}
+    thread = s["autoleaderboard_thread"]
+    if thread:
+        kwargs["message_thread_id"] = thread
+    try:
+        await context.bot.send_message(chat_id, txt, **kwargs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def schedule_autoleaderboard(app, chat_id):
+    """(Re)schedule the weekly Sunday-21:00 leaderboard post for one chat."""
+    jq = app.job_queue
+    if not jq:
+        return
+    for j in jq.get_jobs_by_name(f"alb_{chat_id}"):
+        j.schedule_removal()
+    s = db.get_settings(chat_id)
+    if not s["autoleaderboard_on"]:
+        return
+    tz = _ap_tz(s["autoleaderboard_tz"] or "Europe/Zurich")
+    t = dtime(21, 0, tzinfo=tz) if tz else dtime(21, 0)
+    # PTB run_daily days convention: 0=Sunday, 1=Monday, ..., 6=Saturday
+    jq.run_daily(_autoleaderboard_job, t, days=(0,),
+                 data={"chat_id": chat_id}, name=f"alb_{chat_id}")
+
+
+def reschedule_autoleaderboard(app):
+    try:
+        rows = db.query("SELECT chat_id FROM settings WHERE autoleaderboard_on=1")
+    except Exception:  # noqa: BLE001
+        rows = []
+    for r in rows:
+        schedule_autoleaderboard(app, r["chat_id"])
+
+
+@group_only
+@admin_only
+async def autoleaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = target_chat(update)
+    msg = update.effective_message
+    args = [a for a in context.args]
+    sub = args[0].lower() if args else "status"
+    s = db.get_settings(chat_id)
+
+    if sub in ("on", "here"):
+        db.set_setting(chat_id, "autoleaderboard_on", 1)
+        thread = getattr(msg, "message_thread_id", None)
+        db.set_setting(chat_id, "autoleaderboard_thread", thread)
+        schedule_autoleaderboard(context.application, chat_id)
+        where = "this topic" if thread else "the group (General)"
+        await msg.reply_text(
+            f"🏆 <b>Auto-leaderboard ON</b> ⚡\nThe Top 10 will post every "
+            f"<b>Sunday 9pm</b> ({s['autoleaderboard_tz'] or 'Europe/Zurich'}) in {where}.\n"
+            "Try one now: /autoleaderboard test",
+            parse_mode=ParseMode.HTML)
+        return
+    if sub == "off":
+        db.set_setting(chat_id, "autoleaderboard_on", 0)
+        schedule_autoleaderboard(context.application, chat_id)
+        await msg.reply_text("🏆 Auto-leaderboard <b>OFF</b>.", parse_mode=ParseMode.HTML)
+        return
+    if sub == "test":
+        # invoke the job inline with a minimal stub context
+        class _Stub:
+            def __init__(self, app, chat_id):
+                self.bot = app.bot
+                self.job = type("J", (), {"data": {"chat_id": chat_id}})
+        await _autoleaderboard_job(_Stub(context.application, chat_id))
+        return
+
+    state = "ON ✅" if s["autoleaderboard_on"] else "OFF"
+    await msg.reply_text(
+        f"🏆 <b>Auto-leaderboard:</b> {state}\n"
+        f"🕒 Sundays 9pm ({s['autoleaderboard_tz'] or 'Europe/Zurich'})\n\n"
+        "Commands:\n"
+        "/autoleaderboard here — enable in THIS topic\n"
+        "/autoleaderboard off — disable\n"
+        "/autoleaderboard test — post one now",
+        parse_mode=ParseMode.HTML)
 
 
 @group_only
@@ -4999,6 +5265,7 @@ def register_fun(app):
     app.add_handler(CommandHandler(["basket", "hoop"], basket))
     app.add_handler(CommandHandler(["football", "penalty", "soccer"], football))
     app.add_handler(CommandHandler(["autotrivia", "autoquiz"], autotrivia))
+    app.add_handler(CommandHandler(["autoleaderboard", "autotop", "autolb"], autoleaderboard))
     app.add_handler(CommandHandler(["8ball", "eightball"], eightball))
     app.add_handler(CommandHandler("rate", rate))
     app.add_handler(CommandHandler(["rps", "rockpaperscissors"], rps))
@@ -5094,6 +5361,198 @@ def _autoguard_reason(text):
     return None
 
 
+# ===========================================================================
+# Personality system — ZAPP's in-character responses
+# ===========================================================================
+# Free, template-based "AI-style" personality. The bot responds in-character
+# when @-mentioned, replied to, or when natural conversational triggers fire.
+# Cooldown prevents spam; randomization keeps replies feeling fresh.
+
+_zapp_last_reply: dict = {}      # (chat_id, user_id) -> timestamp
+_zapp_chat_cooldown: dict = {}   # chat_id -> timestamp (global per-chat throttle)
+PERSONALITY_USER_COOLDOWN = 30   # same user can't trigger more than once / 30s
+PERSONALITY_CHAT_COOLDOWN = 8    # bot won't speak more than once / 8s in a chat
+
+ZAPP_REPLIES = {
+    "greet": [
+        "GM {name} ⚡ welcome to the current",
+        "ayy {name} 🔌 plugged in?",
+        "{name} the lightning recognizes its own ⚡",
+        "current detected. hello {name} ⚡",
+        "GM fren — stay charged ⚡",
+        "{name} good to see another node online 🔌",
+    ],
+    "gn": [
+        "GN {name} ⚡ the current never sleeps tho",
+        "rest well {name}, the chain runs all night ⚡",
+        "{name} 🌙 dream in 3·6·9",
+        "GN fren — see you on the next current ⚡",
+    ],
+    "moon": [
+        "the moon is just a meter we haven't unplugged yet ⚡",
+        "moon? we're building a tower, fren 🔌",
+        "3·6·9 is the path. moon is a side effect ⚡",
+        "wen real holders → wen everything {name} ⚡",
+        "we don't promise moons, we promise current ⚡",
+    ],
+    "pump": [
+        "the pump is whoever shows up today {name} ⚡",
+        "we don't pump, we plug in 🔌",
+        "real holders > pumped charts. always ⚡",
+        "if you want pumps, you want elsewhere. if you want current, stay ⚡",
+    ],
+    "dump": [
+        "red days fund green days {name} ⚡ stay charged",
+        "the current doesn't care about candles 🔌",
+        "weak hands fold, the tower stays ⚡",
+    ],
+    "rug": [
+        "mint revoked. freeze revoked. fair launch. verify on Solscan, don't trust me ⚡",
+        "rugs are the word that doesn't apply here {name} — check the chain ⚡",
+        "not your average memecoin: every claim is checkable. that's the whole point ⚡",
+    ],
+    "scam": [
+        "i'd say yes but don't trust me — trust Solscan {name} ⚡ verify everything",
+        "anyone DMing you offering a 'team deal' is a scam. admins NEVER DM first ⚡",
+        "verify the contract from /ca before doing anything {name} ⚡",
+    ],
+    "wagmi": [
+        "WAGMI {name} ⚡ the current is with us",
+        "we're all gonna make it. one current at a time ⚡",
+        "{name} 🔌 NGMI is a vibe, WAGMI is a choice",
+    ],
+    "based": [
+        "based {name} ⚡",
+        "real recognizes real 🔌",
+        "{name} gets it ⚡",
+    ],
+    "love": [
+        "the current loves you back {name} ⚡",
+        "{name} 🔌 same energy",
+        "this is how movements start ⚡",
+    ],
+    "thanks": [
+        "anytime {name} ⚡",
+        "🔌 happy to help",
+        "the current flows both ways {name} ⚡",
+    ],
+    "who": [
+        "i'm ⚡ZAPP — the current. the spark. the 3·6·9 made tradeable.",
+        "i'm what happens when free energy meets free money ⚡",
+        "memecoin? frequency? lifestyle? yes ⚡",
+    ],
+    "lore": [
+        "Tesla wanted to give the world free energy. they killed his tower.\nwe're the second tower. but you can't kill a token ⚡",
+        "3 = the spark. 6 = the bloom. 9 = the network. that's the whole thesis ⚡",
+        "ZAPP runs on what was already there. just nobody had named it yet ⚡",
+    ],
+    "price": [
+        "type /price for the live one {name} ⚡",
+        "live numbers in /price 🔌 always fresh",
+    ],
+    "buy": [
+        "/buy has the contract + every link you need {name} ⚡",
+        "🔌 /buy → tap CA → done",
+    ],
+    "default_mention": [
+        "{name} ⚡ what's the current carrying today?",
+        "🔌 here. what do you need {name}?",
+        "{name} the lightning's listening ⚡",
+        "ZAPP online. ask away {name} ⚡",
+        "yo {name} 🔌",
+    ],
+    "default_reply": [
+        "🔌 {name}",
+        "{name} ⚡",
+        "the current hears you {name} ⚡",
+        "🔌",
+    ],
+}
+
+_KEYWORD_TRIGGERS = [
+    (r"\b(gm|good\s*morning)\b", "greet"),
+    (r"\b(gn|good\s*night|goodnight)\b", "gn"),
+    (r"\b(wen|when)\s+moon\b|\bmoon\s+wh?en\b|\bto\s+the\s+moon\b", "moon"),
+    (r"\b(wen|when)\s+pump\b|\bpump\s+wh?en\b|\bpumpin?g?\b", "pump"),
+    (r"\b(dump(ing|ed)?|crashing|bleeding)\b", "dump"),
+    (r"\brug(\s*pull)?\b|\bgonna\s+rug\b", "rug"),
+    (r"\b(scam|safe|legit|honest|trust(worthy)?)\b", "scam"),
+    (r"\bwagmi\b|\bngmi\b", "wagmi"),
+    (r"\b(based|legendary|chad)\b", "based"),
+    (r"\b(i\s+love\s+zapp|love\s+this\s+coin|love\s+(it|u|you))\b", "love"),
+    (r"\b(thank(s|\s+you)?|ty|tysm)\b", "thanks"),
+    (r"\b(who\s+(are|r)\s+(u|you)|what\s+(are|r)\s+(u|you))\b", "who"),
+    (r"\b(tell\s+me|story|lore|history|tesla|3\W*6\W*9|369)\b", "lore"),
+    (r"\b(price|mcap|market\s*cap|how\s+much)\b", "price"),
+    (r"\b(how\s+do\s+i\s+buy|where.*buy|wanna\s+buy|want\s+to\s+buy)\b", "buy"),
+]
+
+
+def _personality_bank(text: str, replied_to_bot: bool, mentioned_bot: bool) -> str:
+    low = (text or "").lower()
+    for pattern, bank in _KEYWORD_TRIGGERS:
+        if re.search(pattern, low):
+            return bank
+    if mentioned_bot:
+        return "default_mention"
+    if replied_to_bot:
+        return "default_reply"
+    return ""
+
+
+async def _personality_try_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """If the message triggers a personality reply, send one. Returns True if sent."""
+    msg = update.effective_message
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    text = (msg.text or msg.caption or "").strip()
+    if not text or not user:
+        return False
+
+    bot_username = (context.bot.username or "").lower()
+    mentioned_bot = bool(bot_username and f"@{bot_username}" in text.lower())
+    replied_to_bot = bool(
+        msg.reply_to_message
+        and msg.reply_to_message.from_user
+        and msg.reply_to_message.from_user.id == context.bot.id
+    )
+
+    bank = _personality_bank(text, replied_to_bot, mentioned_bot)
+    if not bank:
+        return False
+    keyword_only = bank in ("greet", "gn")
+    # Bare keyword triggers fire only when engaged (mention/reply) OR for gm/gn
+    if not (mentioned_bot or replied_to_bot or keyword_only):
+        return False
+
+    now = time.time()
+    last_user = _zapp_last_reply.get((chat_id, user.id), 0)
+    last_chat = _zapp_chat_cooldown.get(chat_id, 0)
+    if now - last_user < PERSONALITY_USER_COOLDOWN:
+        return False
+    if now - last_chat < PERSONALITY_CHAT_COOLDOWN:
+        return False
+
+    # gm/gn from random users: only respond ~1 in 4 to avoid being annoying
+    if keyword_only and not (mentioned_bot or replied_to_bot):
+        if random.random() > 0.25:
+            return False
+
+    options = ZAPP_REPLIES.get(bank) or ZAPP_REPLIES["default_mention"]
+    template = random.choice(options)
+    name = mention(user)
+    reply_text = template.replace("{name}", name).replace("{brand}", BRAND)
+
+    try:
+        await msg.reply_text(reply_text, parse_mode=ParseMode.HTML,
+                             disable_web_page_preview=True)
+        _zapp_last_reply[(chat_id, user.id)] = now
+        _zapp_chat_cooldown[chat_id] = now
+        return True
+    except BadRequest:
+        return False
+
+
 async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not msg or update.effective_chat.type == ChatType.PRIVATE:
@@ -5124,6 +5583,8 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Admins & approved users bypass passive enforcement below
     if user_is_admin or _is_approved(chat_id, user.id):
+        if await _personality_try_reply(update, context):
+            return
         await _run_filters(update, msg, chat_id)
         return
 
@@ -5210,7 +5671,11 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-    # 7) Filters
+    # 7) Personality — in-character ZAPP replies
+    if await _personality_try_reply(update, context):
+        return
+
+    # 8) Filters
     await _run_filters(update, msg, chat_id)
 
 
@@ -5364,37 +5829,51 @@ async def _post_init(app):
     reschedule_all(app)
     reschedule_autoposts(app)
     reschedule_autotrivia(app)
+    reschedule_autoleaderboard(app)
     try:
         await app.bot.set_my_commands([
-            ("help", "Show all commands"),
+            # Discovery / navigation (top of list = most visible)
+            ("menu", "Open the ZAPP arcade menu"),
+            ("help", "What I can do"),
             ("buy", "How to buy ZAPP (CA + links)"),
-            ("trade", "Buy ZAPP inside Telegram"),
             ("price", "Live ZAPP price"),
-            ("ca", "Official contract address"),
-            ("whitepaper", "ZAPP whitepaper"),
-            ("socials", "All ZAPP socials"),
-            ("chart", "ZAPP chart"),
-            ("stats", "Live token + group stats"),
-            ("autopost", "Scheduled daily posts (admin)"),
-            ("spin", "Daily slot spin for points"),
-            ("trivia", "Play ZAPP trivia for points"),
-            ("football", "⚽ Take a penalty shot"),
-            ("dart", "🎯 Throw a dart"),
-            ("basket", "🏀 Shoot a hoop"),
-            ("flip", "🪙 Flip a coin"),
-            ("rps", "✊ Rock paper scissors"),
-            ("autotrivia", "Scheduled trivia rounds (admin)"),
-            ("tr", "Translate a message"),
-            ("tasks", "Earn points — social tasks"),
-            ("submit", "Submit proof to earn points"),
-            ("top", "Points leaderboard"),
+            # Stats
+            ("points", "Your points + rank + streak"),
+            ("top", "The leaderboard"),
             ("milestone", "Race to 369 status"),
-            ("give", "Reward someone points (reply)"),
-            ("points", "Check your points"),
-            ("rules", "Show the group rules"),
-            ("report", "Report a message to admins"),
+            # Games
+            ("spin", "🎰 Daily slot — win points"),
+            ("trivia", "🧠 Trivia — +9 pts for first correct"),
+            ("football", "⚽ Penalty shot"),
+            ("basket", "🏀 Shoot a hoop"),
+            ("dart", "🎯 Throw a dart"),
+            ("flip", "🪙 Flip a coin"),
+            ("roll", "🎲 Roll the dice"),
+            ("rps", "✊ Rock paper scissors"),
+            ("fortune", "🔮 Daily fortune"),
+            # Earning
+            ("tasks", "Earn-by-sharing quests"),
+            ("submit", "Submit proof to earn points"),
+            # Info
+            ("ca", "Contract address"),
+            ("chart", "Live chart"),
+            ("whitepaper", "Whitepaper"),
+            ("socials", "All socials"),
+            ("stats", "Live token + group stats"),
+            ("rules", "Group rules"),
+            # Utilities
+            ("tr", "Translate (reply to a message)"),
             ("afk", "Set yourself away"),
-            ("settings", "Show group settings"),
+            ("report", "Alert admins (reply to a message)"),
+            # Admin
+            ("adminhelp", "Moderation commands (admin)"),
+            ("connect", "Manage group from DM (admin)"),
+            ("connection", "See your active connection (admin)"),
+            ("give", "Reward someone (admin, reply)"),
+            ("autopost", "Daily auto-posts (admin)"),
+            ("autotrivia", "Scheduled trivia (admin)"),
+            ("autoleaderboard", "Weekly leaderboard post (admin)"),
+            ("settings", "Group settings (admin)"),
         ])
     except Exception as e:  # noqa: BLE001
         logger.warning("set_my_commands failed: %s", e)
