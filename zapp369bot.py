@@ -3287,7 +3287,8 @@ async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     now = time.time()
     for member in update.effective_message.new_chat_members:
-        if member.id == context.bot.id:
+        # never welcome bots (e.g. an admin adding DextBuyBot) or ourselves
+        if member.id == context.bot.id or member.is_bot:
             continue
 
         # --- anti-raid ---
