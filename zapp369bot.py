@@ -1201,6 +1201,7 @@ PHANTOM = f"https://phantom.com/tokens/solana/{CA}?referralId=k31pepyasnt"
 # Trusted Solana trading bots (official links). They handle wallets/keys, not us.
 BONKBOT = "https://t.me/solana_bonkbot"
 TROJAN = "https://t.me/solana_trojanbot"
+DEXTBOT = "https://t.me/DextBuyBot"   # DexTools official Buy Bot (buy alerts + trending boost)
 # TODO: add TikTok and Discord URLs when provided
 TIKTOK = ""
 DISCORD = ""
@@ -1262,9 +1263,10 @@ async def ca(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _trade_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🦅 Trojan", url=TROJAN),
-         InlineKeyboardButton("👻 Phantom", url=PHANTOM)],
-        [InlineKeyboardButton("🪐 Jupiter", url=JUPITER),
-         InlineKeyboardButton("💊 pump.fun", url=PUMPFUN)],
+         InlineKeyboardButton("📊 DexTools Bot", url=DEXTBOT)],
+        [InlineKeyboardButton("👻 Phantom", url=PHANTOM),
+         InlineKeyboardButton("🪐 Jupiter", url=JUPITER)],
+        [InlineKeyboardButton("💊 pump.fun", url=PUMPFUN)],
     ])
 
 
