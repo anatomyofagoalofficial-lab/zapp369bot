@@ -31,7 +31,7 @@ from telegram.constants import ParseMode, ChatType, ChatMemberStatus
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters,
+    ChatMemberHandler, ContextTypes, filters,
 )
 
 __version__ = "2.0.0"
@@ -3330,12 +3330,14 @@ async def on_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "✅ I'm human", callback_data=f"cap:{member.id}:ok")]])
                 await _send_welcome(update.effective_message, s, member, chat,
                                     extra="\n\n🤖 Tap below to unlock chat.", reply_markup=kb)
+            _mark_welcomed(chat.id, member.id)
             if context.job_queue:
                 context.job_queue.run_once(_kick_unverified, 120, data=(chat.id, member.id))
             continue
 
         # --- normal welcome ---
         if s["welcome_on"]:
+            _mark_welcomed(chat.id, member.id)
             sent = await _send_welcome(update.effective_message, s, member, chat)
             if s["clean_welcome"] and sent and context.job_queue:
                 context.job_queue.run_once(
@@ -3506,6 +3508,72 @@ async def test_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _send_welcome(update.effective_message, s, update.effective_user, chat)
 
 
+# --- welcome de-dupe + chat_member fallback ------------------------------------
+# Some forum/privacy setups suppress the "X joined" service message, so the
+# NEW_CHAT_MEMBERS MessageHandler never fires. We also listen to chat_member
+# updates as a fallback. This dict makes sure a member is welcomed exactly once.
+_welcomed_recent: dict = {}
+
+def _mark_welcomed(chat_id, uid):
+    _welcomed_recent[(chat_id, uid)] = time.time()
+    # prune
+    if len(_welcomed_recent) > 4000:
+        cut = time.time() - 120
+        for k in [k for k, t in _welcomed_recent.items() if t < cut]:
+            _welcomed_recent.pop(k, None)
+
+def _was_welcomed(chat_id, uid, window=45):
+    t = _welcomed_recent.get((chat_id, uid))
+    return t is not None and (time.time() - t) < window
+
+
+class _GeneralSender:
+    """Adapter so _send_welcome can post a fresh message into the General topic
+    (message_thread_id=None) when there's no service message to reply to."""
+    def __init__(self, bot, chat_id):
+        self._bot, self._cid = bot, chat_id
+    async def reply_text(self, text, **kw):
+        return await self._bot.send_message(self._cid, text, message_thread_id=None, **kw)
+    async def reply_photo(self, fid, **kw):
+        return await self._bot.send_photo(self._cid, fid, message_thread_id=None, **kw)
+    async def reply_animation(self, fid, **kw):
+        return await self._bot.send_animation(self._cid, fid, message_thread_id=None, **kw)
+    async def reply_video(self, fid, **kw):
+        return await self._bot.send_video(self._cid, fid, message_thread_id=None, **kw)
+
+
+async def on_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fallback welcome via chat_member updates (fires when the join service
+    message is missing). Posts into General only; respects captcha/anti-raid by
+    deferring to the service-message path when those are on."""
+    cmu = update.chat_member
+    if not cmu:
+        return
+    chat = update.effective_chat
+    old = cmu.old_chat_member.status
+    new = cmu.new_chat_member.status
+    joined = (old in ("left", "kicked")) and (new in ("member", "restricted"))
+    if not joined:
+        return
+    member = cmu.new_chat_member.user
+    if member.is_bot or member.id == context.bot.id:
+        return
+    if _was_welcomed(chat.id, member.id):
+        return
+    s = db.get_settings(chat.id)
+    if not s["welcome_on"]:
+        return
+    # if captcha or anti-raid is active, let the service-message path handle it
+    if s["captcha_on"] or s["antiraid_on"]:
+        return
+    _mark_welcomed(chat.id, member.id)
+    sender = _GeneralSender(context.bot, chat.id)
+    try:
+        await _send_welcome(sender, s, member, chat)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("fallback welcome failed: %s", e)
+
+
 def register_greetings(app):
     app.add_handler(CommandHandler("setwelcome", setwelcome))
     app.add_handler(CommandHandler(["setwelcomeimage", "setwelcomepic", "setwelcomegif"], setwelcomeimage))
@@ -3521,6 +3589,7 @@ def register_greetings(app):
     app.add_handler(CallbackQueryHandler(captcha_callback, pattern=r"^cap:"))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_new_member))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, on_left_member))
+    app.add_handler(ChatMemberHandler(on_member_update, ChatMemberHandler.CHAT_MEMBER))
 
 
 # ===========================================================================
@@ -5033,15 +5102,15 @@ SOCIAL_TASKS = {
     "story":    ("📸 Instagram/Story", 25, 1),
     "insta":    ("📸 Instagram/Story", 25, 1),
     "tiktok":   ("🎵 TikTok post", 40, 1),
-    "share":    ("📤 Group share (WhatsApp/TG)", 20, 3),
-    "whatsapp": ("📤 WhatsApp share", 20, 3),
-    "like":     ("❤️ Like", 10, 3),
-    "comment":  ("💬 Comment", 15, 3),
-    "meme":     ("😂 Meme creation", 50, 3),
-    "gif":      ("🎞 GIF creation", 50, 3),
-    "sticker":  ("🩷 Sticker creation", 50, 3),
+    "share":    ("📤 Group share (WhatsApp/TG)", 20, 9),
+    "whatsapp": ("📤 WhatsApp share", 20, 9),
+    "like":     ("❤️ Like", 10, 9),
+    "comment":  ("💬 Comment", 15, 9),
+    "meme":     ("😂 Meme creation", 50, 9),
+    "gif":      ("🎞 GIF creation", 50, 9),
+    "sticker":  ("🩷 Sticker creation", 50, 9),
 }
-SOCIAL_DEFAULT = ("✨ Shill / proof", 20, 3)
+SOCIAL_DEFAULT = ("✨ Shill / proof", 20, 9)
 
 
 def _social_task(name):
@@ -5113,7 +5182,7 @@ async def submit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # too many pending overall?
     pend = db.query("SELECT COUNT(*) c FROM submissions WHERE chat_id=? AND user_id=? "
                     "AND status='pending'", (chat_id, user.id), one=True)
-    if pend and pend["c"] >= 5:
+    if pend and pend["c"] >= 9:
         await msg.reply_text("⏳ You have several submissions awaiting review — "
                              "let admins catch up first. 🙏")
         return
