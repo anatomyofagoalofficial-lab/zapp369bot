@@ -3566,8 +3566,11 @@ async def on_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = db.get_settings(chat.id)
     if not s["welcome_on"]:
         return
-    # if captcha or anti-raid is active, let the service-message path handle it
-    if s["captcha_on"] or s["antiraid_on"]:
+    # captcha needs the interactive mute flow (service-message path handles it)
+    if s["captcha_on"]:
+        return
+    # only skip during an ACTIVE raid lockdown, not just because antiraid is enabled
+    if raid_active.get(chat.id, 0) > time.time():
         return
     _mark_welcomed(chat.id, member.id)
     sender = _GeneralSender(context.bot, chat.id)
@@ -5098,13 +5101,13 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===========================================================================
 # task -> (display label, reward points, max per day)
 SOCIAL_TASKS = {
-    "twitter":  ("𝕏 Repost / Quote", 30, 1),
-    "rt":       ("𝕏 Repost / Quote", 30, 1),
-    "repost":   ("𝕏 Repost / Quote", 30, 1),
-    "tweet":    ("𝕏 Original tweet", 40, 1),
-    "story":    ("📸 Instagram/Story", 25, 1),
-    "insta":    ("📸 Instagram/Story", 25, 1),
-    "tiktok":   ("🎵 TikTok post", 40, 1),
+    "twitter":  ("𝕏 Repost / Quote", 30, 9),
+    "rt":       ("𝕏 Repost / Quote", 30, 9),
+    "repost":   ("𝕏 Repost / Quote", 30, 9),
+    "tweet":    ("𝕏 Original tweet", 40, 9),
+    "story":    ("📸 Instagram/Story", 25, 9),
+    "insta":    ("📸 Instagram/Story", 25, 9),
+    "tiktok":   ("🎵 TikTok post", 40, 9),
     "share":    ("📤 Group share (WhatsApp/TG)", 20, 9),
     "whatsapp": ("📤 WhatsApp share", 20, 9),
     "like":     ("❤️ Like", 10, 9),
@@ -5970,7 +5973,9 @@ def main():
     app.add_error_handler(_on_error)
     total = sum(len(v) for v in app.handlers.values())
     logger.info("⚡ ZAPP369bot v2 (single file) running — %d handlers", total)
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    app.run_polling(allowed_updates=["message","edited_message","callback_query",
+                                     "chat_member","my_chat_member","chat_join_request"],
+                    drop_pending_updates=True)
 
 
 if __name__ == "__main__":
