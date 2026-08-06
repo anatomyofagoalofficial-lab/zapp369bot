@@ -1883,6 +1883,355 @@ async def captcha_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _captcha_answers.pop((chat_id, target), None)
 
 
+# =====================================================================
+# ⚡ZAPP TRIVIA NIGHT
+# Financial education and life development, drawn from six classic books.
+# Owner activated only. First to the target score wins.
+# =====================================================================
+
+TRIVIA_OWNER = os.environ.get("TRIVIA_OWNER", "radamdibabel").lstrip("@").lower()
+TRIVIA_TARGET_DEFAULT = 9
+TRIVIA_SECONDS = 30          # time to answer each question
+TRIVIA_GAP = 6               # pause between questions
+
+_trivia = {}                 # chat_id -> session dict
+
+TRIVIA_BANK = [
+    # ---------- The Richest Man in Babylon ----------
+    ("The Richest Man in Babylon", "What portion of everything you earn does Arkad say you should keep for yourself?",
+     ["One tenth", "One half", "One third", "One twentieth"], 0),
+    ("The Richest Man in Babylon", "Who is the richest man in Babylon in the book?",
+     ["Arkad", "Bansir", "Algamish", "Kobbi"], 0),
+    ("The Richest Man in Babylon", "What was Bansir's trade before he sought Arkad's advice?",
+     ["Chariot builder", "Musician", "Money lender", "Stone mason"], 0),
+    ("The Richest Man in Babylon", "Arkad's first law of gold says gold comes readily to the person who does what?",
+     ["Saves at least a tenth of earnings", "Works the longest hours", "Borrows to invest", "Buys land"], 0),
+    ("The Richest Man in Babylon", "According to the book, the first principle when investing is to do what?",
+     ["Guard the principal from loss", "Chase the highest return", "Diversify into ten ventures", "Follow the crowd"], 0),
+    ("The Richest Man in Babylon", "Whose advice should you seek about gold, according to Arkad?",
+     ["Those experienced in handling money", "Your closest friends", "The wealthiest man you know", "A brick maker"], 0),
+    ("The Richest Man in Babylon", "The book calls the remedies for an empty purse the Seven Cures for what?",
+     ["A Lean Purse", "A Poor Man", "A Broken Home", "An Idle Mind"], 0),
+    ("The Richest Man in Babylon", "Arkad describes money that earns more money as what?",
+     ["A worker that labours for you", "A tool to be spent", "A gift from the gods", "A burden"], 0),
+    ("The Richest Man in Babylon", "What does the book advise doing about your home?",
+     ["Own it rather than rent", "Always rent", "Buy the largest you can", "Never own property"], 0),
+
+    # ---------- The Intelligent Investor ----------
+    ("The Intelligent Investor", "Who wrote The Intelligent Investor?",
+     ["Benjamin Graham", "Warren Buffett", "Peter Lynch", "John Bogle"], 0),
+    ("The Intelligent Investor", "Graham's imaginary business partner who offers wild daily prices is called what?",
+     ["Mr Market", "Mr Money", "Mr Risk", "Mr Value"], 0),
+    ("The Intelligent Investor", "What is Graham's central concept for protecting against error and bad luck?",
+     ["Margin of safety", "Stop loss", "Leverage", "Momentum"], 0),
+    ("The Intelligent Investor", "Graham divides investors into which two types?",
+     ["Defensive and enterprising", "Bull and bear", "Rich and poor", "Young and old"], 0),
+    ("The Intelligent Investor", "Which famous investor called Graham his teacher and mentor?",
+     ["Warren Buffett", "George Soros", "Ray Dalio", "Carl Icahn"], 0),
+    ("The Intelligent Investor", "Graham says an investment operation promises safety of principal and what else?",
+     ["An adequate return", "A doubling of capital", "Tax free income", "Guaranteed profit"], 0),
+    ("The Intelligent Investor", "Buying a fixed amount at regular intervals regardless of price is called what?",
+     ["Dollar cost averaging", "Short selling", "Arbitrage", "Hedging"], 0),
+    ("The Intelligent Investor", "Graham warns that the investor's chief problem is likely to be what?",
+     ["Himself", "Inflation", "Brokers", "Taxes"], 0),
+    ("The Intelligent Investor", "What does Graham say separates investment from speculation?",
+     ["Thorough analysis and safety of principal", "The size of the position", "How long you hold", "Using a broker"], 0),
+
+    # ---------- The Psychology of Money ----------
+    ("The Psychology of Money", "Who wrote The Psychology of Money?",
+     ["Morgan Housel", "Nassim Taleb", "Robert Cialdini", "Daniel Kahneman"], 0),
+    ("The Psychology of Money", "The book opens contrasting a wealthy executive with a janitor named what?",
+     ["Ronald Read", "James Clear", "Richard Fuscone", "Charlie Munger"], 0),
+    ("The Psychology of Money", "Housel argues doing well with money depends mostly on what?",
+     ["How you behave", "How smart you are", "Which school you attended", "How much you earn"], 0),
+    ("The Psychology of Money", "According to Housel, the most powerful ingredient in compounding is what?",
+     ["Time", "High returns", "Leverage", "Timing the market"], 0),
+    ("The Psychology of Money", "Housel says getting wealthy and staying wealthy require what?",
+     ["Two different skills", "The same skill", "A large inheritance", "Constant trading"], 0),
+    ("The Psychology of Money", "The idea that a small number of events drive most outcomes is called what?",
+     ["Tails drive everything", "The long game", "The safety net", "The slow burn"], 0),
+    ("The Psychology of Money", "Housel describes the highest form of wealth as the ability to do what?",
+     ["Control your own time", "Buy anything you want", "Retire before forty", "Beat the market"], 0),
+    ("The Psychology of Money", "Housel says the hardest financial skill is getting what to stop moving?",
+     ["The goalpost", "The market", "Your salary", "Inflation"], 0),
+    ("The Psychology of Money", "Why does Housel say you should save even without a specific goal?",
+     ["Savings buy flexibility and options", "Banks reward it", "It lowers your taxes", "It impresses others"], 0),
+
+    # ---------- Rich Dad Poor Dad ----------
+    ("Rich Dad Poor Dad", "Who wrote Rich Dad Poor Dad?",
+     ["Robert Kiyosaki", "Tony Robbins", "Dave Ramsey", "Suze Orman"], 0),
+    ("Rich Dad Poor Dad", "How does the book define an asset?",
+     ["Something that puts money in your pocket", "Anything you own", "Anything expensive", "Something you inherit"], 0),
+    ("Rich Dad Poor Dad", "How does the book define a liability?",
+     ["Something that takes money out of your pocket", "A loan you gave", "A savings account", "A business"], 0),
+    ("Rich Dad Poor Dad", "The cycle of working, earning and spending with nothing left is called what?",
+     ["The rat race", "The ladder", "The grind", "The loop"], 0),
+    ("Rich Dad Poor Dad", "Who was the poor dad in the book?",
+     ["The author's own highly educated father", "A neighbour", "A teacher at school", "His grandfather"], 0),
+    ("Rich Dad Poor Dad", "Kiyosaki's four quadrants are Employee, Self employed, Business owner and what?",
+     ["Investor", "Inventor", "Influencer", "Inheritor"], 0),
+    ("Rich Dad Poor Dad", "The book's controversial claim about your family home is that it is what?",
+     ["Not an asset", "The best asset", "Always a liability to avoid", "A guaranteed return"], 0),
+    ("Rich Dad Poor Dad", "Kiyosaki says the rich do not work for money. What do they work for instead?",
+     ["To acquire assets", "For recognition", "For a pension", "For promotions"], 0),
+    ("Rich Dad Poor Dad", "What does the book say is the main reason people struggle financially?",
+     ["A lack of financial education", "Bad luck", "Low salaries", "High taxes alone"], 0),
+
+    # ---------- Think and Grow Rich ----------
+    ("Think and Grow Rich", "Who wrote Think and Grow Rich?",
+     ["Napoleon Hill", "Dale Carnegie", "Norman Vincent Peale", "Earl Nightingale"], 0),
+    ("Think and Grow Rich", "Which industrialist encouraged Hill to study successful people?",
+     ["Andrew Carnegie", "Henry Ford", "John Rockefeller", "Thomas Edison"], 0),
+    ("Think and Grow Rich", "How many principles does the book set out?",
+     ["Thirteen", "Seven", "Ten", "Twenty one"], 0),
+    ("Think and Grow Rich", "What does Hill call the starting point of all achievement?",
+     ["Desire", "Luck", "Money", "Education"], 0),
+    ("Think and Grow Rich", "Hill's principle of an alliance of minds working toward one aim is called what?",
+     ["The Master Mind", "The Inner Circle", "The Council", "The Syndicate"], 0),
+    ("Think and Grow Rich", "In Hill's famous story, the gold miner Darby quit when he was how far from the vein?",
+     ["Three feet", "Three miles", "Three days", "Three years"], 0),
+    ("Think and Grow Rich", "Repeating your goal to yourself to influence the subconscious is called what?",
+     ["Autosuggestion", "Visualisation", "Meditation", "Affirmation therapy"], 0),
+    ("Think and Grow Rich", "Hill says what quality is essential to overcome inevitable failure?",
+     ["Persistence", "Charm", "Intelligence", "Connections"], 0),
+    ("Think and Grow Rich", "Hill argues a definite plan should be paired with what?",
+     ["A definite purpose", "A large loan", "A famous partner", "A backup career"], 0),
+
+    # ---------- Your Money or Your Life ----------
+    ("Your Money or Your Life", "Who are the authors of Your Money or Your Life?",
+     ["Vicki Robin and Joe Dominguez", "Vicki Robin alone", "JL Collins", "Pete Adeney"], 0),
+    ("Your Money or Your Life", "The book asks you to see money as a form of what?",
+     ["Life energy", "Power", "Freedom alone", "Luck"], 0),
+    ("Your Money or Your Life", "How many steps does the programme in the book contain?",
+     ["Nine", "Five", "Twelve", "Three"], 0),
+    ("Your Money or Your Life", "The point where investment income covers your expenses is called what?",
+     ["The crossover point", "The break even", "The tipping point", "The summit"], 0),
+    ("Your Money or Your Life", "The book asks you to judge each expense by asking whether you received what?",
+     ["Fulfilment in proportion to life energy spent", "The lowest price", "Approval from others", "A tax benefit"], 0),
+    ("Your Money or Your Life", "The curve showing satisfaction rising then falling with spending is called what?",
+     ["The fulfilment curve", "The wealth curve", "The debt curve", "The income curve"], 0),
+    ("Your Money or Your Life", "The book's word for the peak of that curve, past which more brings less, is what?",
+     ["Enough", "Plenty", "Comfort", "Excess"], 0),
+    ("Your Money or Your Life", "Which modern movement was strongly influenced by this book?",
+     ["FIRE, financial independence retire early", "Day trading", "Crypto mining", "House flipping"], 0),
+    ("Your Money or Your Life", "The book asks you to track what, down to the last cent?",
+     ["Every unit of money in and out", "Only large purchases", "Only your income", "Only your debts"], 0),
+]
+
+
+def _tv_owner_ok(update: Update) -> bool:
+    u = update.effective_user
+    if not u:
+        return False
+    if u.username and u.username.lower() == TRIVIA_OWNER:
+        return True
+    return False
+
+
+def _tv_scoreboard(sess) -> str:
+    if not sess["scores"]:
+        return "No points yet."
+    rows = sorted(sess["scores"].items(), key=lambda kv: -kv[1])[:9]
+    medals = ["🥇", "🥈", "🥉"]
+    out = []
+    for i, (uid, pts) in enumerate(rows):
+        badge = medals[i] if i < 3 else "  "
+        out.append(f"{badge} {sess['names'].get(uid, uid)} — <b>{pts}</b>")
+    return "\n".join(out)
+
+
+async def trivia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not _tv_owner_ok(update):
+        await update.effective_message.reply_text(
+            "🔒 Only @" + TRIVIA_OWNER + " can start ⚡ZAPP Trivia Night.")
+        return
+    if chat.id in _trivia:
+        await update.effective_message.reply_text("A trivia night is already running. Use /triviastop to end it.")
+        return
+
+    target = TRIVIA_TARGET_DEFAULT
+    if context.args:
+        try:
+            target = max(3, min(27, int(context.args[0])))
+        except ValueError:
+            pass
+
+    pool = TRIVIA_BANK[:]
+    random.shuffle(pool)
+    _trivia[chat.id] = {
+        "pool": pool, "idx": 0, "target": target,
+        "scores": {}, "names": {}, "answered": set(),
+        "current": None, "msg_id": None, "running": True,
+        "host": update.effective_user.id,
+    }
+
+    await update.effective_message.reply_text(
+        "⚡ <b>ZAPP TRIVIA NIGHT</b> ⚡\n\n"
+        "Questions on money and self development, drawn from six classics.\n\n"
+        "📖 The Richest Man in Babylon\n"
+        "📖 The Intelligent Investor\n"
+        "📖 The Psychology of Money\n"
+        "📖 Rich Dad Poor Dad\n"
+        "📖 Think and Grow Rich\n"
+        "📖 Your Money or Your Life\n\n"
+        "🏆 First to <b>" + str(target) + "</b> correct answers wins ⚡ZAPP\n"
+        "⏱ " + str(TRIVIA_SECONDS) + " seconds per question\n"
+        "☝️ One answer each, first correct takes the point\n\n"
+        "<i>Prizes are sent manually by the team. This is a community game for "
+        "entertainment and learning. Nothing here is financial advice.</i>\n\n"
+        "Starting now. Good luck. 3 · 6 · 9",
+        parse_mode=ParseMode.HTML)
+
+    if context.job_queue:
+        context.job_queue.run_once(_tv_ask, 4, chat_id=chat.id, name="tv:" + str(chat.id))
+
+
+async def _tv_ask(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    sess = _trivia.get(chat_id)
+    if not sess or not sess["running"]:
+        return
+
+    if sess["idx"] >= len(sess["pool"]):
+        random.shuffle(sess["pool"])
+        sess["idx"] = 0
+
+    book, q, opts, correct = sess["pool"][sess["idx"]]
+    sess["idx"] += 1
+    order = list(range(len(opts)))
+    random.shuffle(order)
+    sess["current"] = {"correct_pos": order.index(correct), "opts": opts, "order": order, "book": book}
+    sess["answered"] = set()
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(opts[o], callback_data="tq:" + str(i))]
+        for i, o in enumerate(order)
+    ])
+    m = await context.bot.send_message(
+        chat_id,
+        "📖 <i>" + book + "</i>\n\n<b>" + q + "</b>\n\n⏱ " + str(TRIVIA_SECONDS) + " seconds",
+        parse_mode=ParseMode.HTML, reply_markup=kb)
+    sess["msg_id"] = m.message_id
+
+    if context.job_queue:
+        context.job_queue.run_once(_tv_timeout, TRIVIA_SECONDS,
+                                   chat_id=chat_id, data=m.message_id,
+                                   name="tvto:" + str(chat_id))
+
+
+async def _tv_timeout(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    sess = _trivia.get(chat_id)
+    if not sess or not sess["running"] or sess["msg_id"] != context.job.data:
+        return
+    cur = sess["current"]
+    if not cur:
+        return
+    right = cur["opts"][cur["order"][cur["correct_pos"]]]
+    try:
+        await context.bot.edit_message_reply_markup(chat_id, sess["msg_id"], reply_markup=None)
+    except BadRequest:
+        pass
+    await context.bot.send_message(
+        chat_id, "⏱ Time. The answer was <b>" + right + "</b>\n\n" + _tv_scoreboard(sess),
+        parse_mode=ParseMode.HTML)
+    sess["current"] = None
+    if context.job_queue:
+        context.job_queue.run_once(_tv_ask, TRIVIA_GAP, chat_id=chat_id, name="tv:" + str(chat_id))
+
+
+async def trivia_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    chat_id = q.message.chat.id
+    sess = _trivia.get(chat_id)
+    if not sess or not sess["running"] or not sess["current"]:
+        await q.answer("That round is over.")
+        return
+    if q.message.message_id != sess["msg_id"]:
+        await q.answer("That question has closed.")
+        return
+
+    uid = q.from_user.id
+    if uid in sess["answered"]:
+        await q.answer("You already answered this one.", show_alert=False)
+        return
+    sess["answered"].add(uid)
+    sess["names"][uid] = mention(q.from_user)
+
+    pick = int(q.data.split(":")[1])
+    cur = sess["current"]
+    if pick != cur["correct_pos"]:
+        await q.answer("Not this time.")
+        return
+
+    # first correct answer takes the point and closes the question
+    sess["scores"][uid] = sess["scores"].get(uid, 0) + 1
+    pts = sess["scores"][uid]
+    sess["current"] = None
+    await q.answer("Correct ⚡")
+    try:
+        await context.bot.edit_message_reply_markup(chat_id, sess["msg_id"], reply_markup=None)
+    except BadRequest:
+        pass
+
+    right = cur["opts"][cur["order"][cur["correct_pos"]]]
+
+    if pts >= sess["target"]:
+        sess["running"] = False
+        await context.bot.send_message(
+            chat_id,
+            "⚡⚡⚡ <b>WE HAVE A WINNER</b> ⚡⚡⚡\n\n"
+            "🏆 " + sess["names"][uid] + " reached <b>" + str(sess["target"]) + "</b> correct answers.\n\n"
+            "Final answer was <b>" + right + "</b>\n\n"
+            "<b>Final scores</b>\n" + _tv_scoreboard(sess) + "\n\n"
+            "Winner user id <code>" + str(uid) + "</code>\n"
+            "@" + TRIVIA_OWNER + " will send the ⚡ZAPP reward manually.\n\n"
+            "Thank you all for playing. 3 · 6 · 9 · ∞\n"
+            "<i>Not financial advice.</i>",
+            parse_mode=ParseMode.HTML)
+        _trivia.pop(chat_id, None)
+        return
+
+    await context.bot.send_message(
+        chat_id,
+        "✅ " + sess["names"][uid] + " takes it. The answer was <b>" + right + "</b>\n\n" + _tv_scoreboard(sess),
+        parse_mode=ParseMode.HTML)
+    if context.job_queue:
+        context.job_queue.run_once(_tv_ask, TRIVIA_GAP, chat_id=chat_id, name="tv:" + str(chat_id))
+
+
+async def trivia_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _tv_owner_ok(update):
+        await update.effective_message.reply_text("🔒 Only @" + TRIVIA_OWNER + " can stop trivia.")
+        return
+    sess = _trivia.pop(update.effective_chat.id, None)
+    if not sess:
+        await update.effective_message.reply_text("No trivia night is running.")
+        return
+    sess["running"] = False
+    await update.effective_message.reply_text(
+        "⚡ Trivia night ended.\n\n<b>Final scores</b>\n" + _tv_scoreboard(sess),
+        parse_mode=ParseMode.HTML)
+
+
+async def trivia_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sess = _trivia.get(update.effective_chat.id)
+    if not sess:
+        await update.effective_message.reply_text("No trivia night is running.")
+        return
+    await update.effective_message.reply_text(
+        "⚡ <b>Scores</b>  (first to " + str(sess["target"]) + " wins)\n\n" + _tv_scoreboard(sess),
+        parse_mode=ParseMode.HTML)
+
+
+def register_trivia(app):
+    app.add_handler(CommandHandler(["trivia", "trivianight"], trivia_start))
+    app.add_handler(CommandHandler(["triviastop", "endtrivia"], trivia_stop))
+    app.add_handler(CommandHandler(["triviascore", "trivrank"], trivia_score))
+    app.add_handler(CallbackQueryHandler(trivia_answer, pattern=r"^tq:"))
+
+
 def register_greetings(app):
     app.add_handler(CommandHandler("setwelcome", setwelcome))
     app.add_handler(CommandHandler("welcome", _toggle("welcome_on")))
@@ -2286,6 +2635,7 @@ def main():
     register_protection(app)
     register_federation(app)
     register_watcher(app)
+    register_trivia(app)
     app.add_error_handler(_on_error)
     total = sum(len(v) for v in app.handlers.values())
     logger.info("⚡ ZAPP369bot v2 (single file) running — %d handlers", total)
