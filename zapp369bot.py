@@ -2044,13 +2044,17 @@ async def trivia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not _tv_owner_ok(update):
         await update.effective_message.reply_text(
-            "🔒 Only @" + TRIVIA_OWNER + " can start ⚡ZAPP Trivia Night.")
+            "🔒 Only @" + TRIVIA_OWNER + " can start ⚡ZAPP 9.")
         return
     if chat.id in _trivia:
-        await update.effective_message.reply_text("A trivia night is already running. Use /triviastop to end it.")
+        await update.effective_message.reply_text("⚡ZAPP 9 is already running here. Use /zapp9stop to end it.")
         return
 
+    # the command itself sets the length: /zapp3 /zapp6 /zapp9
     target = TRIVIA_TARGET_DEFAULT
+    cmd = (update.effective_message.text or "").split()[0].lstrip("/").split("@")[0].lower()
+    if cmd in ("zapp3", "zapp6", "zapp9"):
+        target = int(cmd[-1])
     if context.args:
         try:
             target = max(3, min(27, int(context.args[0])))
@@ -2067,7 +2071,7 @@ async def trivia_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     await update.effective_message.reply_text(
-        "⚡ <b>ZAPP TRIVIA NIGHT</b> ⚡\n\n"
+        "⚡ <b>ZAPP " + str(target) + " NIGHT</b> ⚡\n\n"
         "Questions on money and self development, drawn from six classics.\n\n"
         "📖 The Richest Man in Babylon\n"
         "📖 The Intelligent Investor\n"
@@ -2105,7 +2109,7 @@ async def _tv_ask(context: ContextTypes.DEFAULT_TYPE):
     sess["answered"] = set()
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(opts[o], callback_data="tq:" + str(i))]
+        [InlineKeyboardButton(opts[o], callback_data="z9:" + str(i))]
         for i, o in enumerate(order)
     ])
     m = await context.bot.send_message(
@@ -2203,22 +2207,22 @@ async def trivia_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def trivia_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _tv_owner_ok(update):
-        await update.effective_message.reply_text("🔒 Only @" + TRIVIA_OWNER + " can stop trivia.")
+        await update.effective_message.reply_text("🔒 Only @" + TRIVIA_OWNER + " can stop ⚡ZAPP 9.")
         return
     sess = _trivia.pop(update.effective_chat.id, None)
     if not sess:
-        await update.effective_message.reply_text("No trivia night is running.")
+        await update.effective_message.reply_text("⚡ZAPP 9 is not running right now.")
         return
     sess["running"] = False
     await update.effective_message.reply_text(
-        "⚡ Trivia night ended.\n\n<b>Final scores</b>\n" + _tv_scoreboard(sess),
+        "⚡ ZAPP 9 ended.\n\n<b>Final scores</b>\n" + _tv_scoreboard(sess),
         parse_mode=ParseMode.HTML)
 
 
 async def trivia_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sess = _trivia.get(update.effective_chat.id)
     if not sess:
-        await update.effective_message.reply_text("No trivia night is running.")
+        await update.effective_message.reply_text("⚡ZAPP 9 is not running right now.")
         return
     await update.effective_message.reply_text(
         "⚡ <b>Scores</b>  (first to " + str(sess["target"]) + " wins)\n\n" + _tv_scoreboard(sess),
@@ -2226,10 +2230,11 @@ async def trivia_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def register_trivia(app):
-    app.add_handler(CommandHandler(["trivia", "trivianight"], trivia_start))
-    app.add_handler(CommandHandler(["triviastop", "endtrivia"], trivia_stop))
-    app.add_handler(CommandHandler(["triviascore", "trivrank"], trivia_score))
-    app.add_handler(CallbackQueryHandler(trivia_answer, pattern=r"^tq:"))
+    # unique command names so we never clash with another trivia bot in the group
+    app.add_handler(CommandHandler(["zapp3", "zapp6", "zapp9"], trivia_start))
+    app.add_handler(CommandHandler(["zapp9stop", "zappstop"], trivia_stop))
+    app.add_handler(CommandHandler(["zapp9score", "zappscore"], trivia_score))
+    app.add_handler(CallbackQueryHandler(trivia_answer, pattern=r"^z9:"))
 
 
 def register_greetings(app):
