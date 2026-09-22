@@ -1231,31 +1231,24 @@ PHANTOM = f"https://phantom.com/tokens/solana/{CA}?referralId=k31pepyasnt"
 # Trusted Solana trading bots (official links). They handle wallets/keys, not us.
 BONKBOT = "https://t.me/solana_bonkbot"
 TROJAN = "https://t.me/solana_trojanbot"
-# TODO: add TikTok and Discord URLs when provided
 TIKTOK = "https://www.tiktok.com/@zapp369.energy"
-DISCORD = ""
+DISCORD = "https://discord.gg/6DGRsFXvB"
+STORE = "https://zapp369.com"
 
 
 def _buy_keyboard():
+    # 9 buttons, 3 rows of 3. All in frequency.
     rows = [
-        [InlineKeyboardButton("🪐 Buy on Jupiter", url=JUPITER),
-         InlineKeyboardButton("💊 Buy on pump.fun", url=PUMPFUN)],
-        [InlineKeyboardButton("👻 Buy on Phantom", url=PHANTOM)],
+        [InlineKeyboardButton("🪐 Jupiter", url=JUPITER),
+         InlineKeyboardButton("💊 pump.fun", url=PUMPFUN),
+         InlineKeyboardButton("👻 Phantom", url=PHANTOM)],
         [InlineKeyboardButton("📊 Chart", url=CHART),
-         InlineKeyboardButton("📖 How to Buy", url=HOWTOBUY)],
-        [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("📖 How to Buy", url=HOWTOBUY),
          InlineKeyboardButton("📄 Whitepaper", url=WHITEPAPER)],
-        [InlineKeyboardButton("🎵 TikTok", url=TIKTOK),
+        [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("🛒 Store", url=STORE),
          InlineKeyboardButton("💬 Telegram", url=TELEGRAM)],
     ]
-    # socials — only show buttons whose URL is set (Telegram rejects empty URLs)
-    socials = [
-        ("📸 Instagram", INSTAGRAM),
-        ("👾 Discord", DISCORD),
-    ]
-    live = [InlineKeyboardButton(label, url=url) for label, url in socials if url]
-    for i in range(0, len(live), 2):
-        rows.append(live[i:i + 2])
     return InlineKeyboardMarkup(rows)
 
 
@@ -2243,6 +2236,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📖 Help", callback_data="info:help")],
         # Row 6 — externals
         [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+         InlineKeyboardButton("🛒 Store", url=STORE),
          InlineKeyboardButton("🎵 TikTok", url=TIKTOK)],
     ])
     await update.effective_message.reply_text(
@@ -3917,19 +3911,15 @@ async def autofaq_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --------------------------- quick link commands ---------------------------
 async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 6 buttons, 2 rows of 3. All in frequency.
     rows = [
         [InlineKeyboardButton("🌐 Website", url=_const("WEBSITE")),
+         InlineKeyboardButton("🛒 Store", url=_const("STORE")),
          InlineKeyboardButton("🎵 TikTok", url=_const("TIKTOK"))],
-        [InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM")),
-         InlineKeyboardButton("📸 Instagram", url=_const("INSTAGRAM"))],
+        [InlineKeyboardButton("📸 Instagram", url=_const("INSTAGRAM")),
+         InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM")),
+         InlineKeyboardButton("👾 Discord", url=_const("DISCORD"))],
     ]
-    extra = []
-    if _const("TIKTOK"):
-        extra.append(InlineKeyboardButton("🎵 TikTok", url=_const("TIKTOK")))
-    if _const("DISCORD"):
-        extra.append(InlineKeyboardButton("👾 Discord", url=_const("DISCORD")))
-    for i in range(0, len(extra), 2):
-        rows.append(extra[i:i + 2])
     await update.effective_message.reply_text(
         "📣 <b>⚡ZAPP Socials</b>\nFollow, like, repost — keep the signal loud. ⚡\n"
         "∞ 3 · 6 · 9 ∞",
@@ -4030,8 +4020,8 @@ def _ap_buy_kb():
 def _ap_socials_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Website", url=_const("WEBSITE")),
+         InlineKeyboardButton("🛒 Store", url=_const("STORE")),
          InlineKeyboardButton("🎵 TikTok", url=_const("TIKTOK"))],
-        [InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM"))],
     ])
 
 
@@ -5921,8 +5911,11 @@ async def _autofaq(update, msg, chat_id):
                 "📣 <b>⚡ZAPP Socials</b>", parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🌐 Website", url=WEBSITE),
+                     InlineKeyboardButton("🛒 Store", url=STORE),
                      InlineKeyboardButton("🎵 TikTok", url=TIKTOK)],
-                    [InlineKeyboardButton("💬 Telegram", url=TELEGRAM)]]),
+                    [InlineKeyboardButton("📸 Instagram", url=INSTAGRAM),
+                     InlineKeyboardButton("💬 Telegram", url=TELEGRAM),
+                     InlineKeyboardButton("👾 Discord", url=DISCORD)]]),
                 disable_web_page_preview=True)
         elif intent == "moon":
             await msg.reply_text(random.choice([
