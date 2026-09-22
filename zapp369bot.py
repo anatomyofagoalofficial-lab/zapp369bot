@@ -1092,7 +1092,7 @@ DEFAULT_ABOUT = (
     "• 0% tax · LP burned · community-owned\n"
     "• Built on the 3 · 6 · 9 frequency\n\n"
     "🌐 zapp369.energy\n"
-    "𝕏 x.com/ZAPPonSOL\n"
+    "🎵 tiktok.com/@zapp369.energy\n"
     "💬 t.me/ZAPP369\n\n"
     "Type /buy to join the current. ⚡ 3 · 6 · 9 ∞"
 )
@@ -1232,7 +1232,7 @@ PHANTOM = f"https://phantom.com/tokens/solana/{CA}?referralId=k31pepyasnt"
 BONKBOT = "https://t.me/solana_bonkbot"
 TROJAN = "https://t.me/solana_trojanbot"
 # TODO: add TikTok and Discord URLs when provided
-TIKTOK = ""
+TIKTOK = "https://www.tiktok.com/@zapp369.energy"
 DISCORD = ""
 
 
@@ -1245,13 +1245,12 @@ def _buy_keyboard():
          InlineKeyboardButton("📖 How to Buy", url=HOWTOBUY)],
         [InlineKeyboardButton("🌐 Website", url=WEBSITE),
          InlineKeyboardButton("📄 Whitepaper", url=WHITEPAPER)],
-        [InlineKeyboardButton("𝕏 Twitter", url=TWITTER),
+        [InlineKeyboardButton("🎵 TikTok", url=TIKTOK),
          InlineKeyboardButton("💬 Telegram", url=TELEGRAM)],
     ]
     # socials — only show buttons whose URL is set (Telegram rejects empty URLs)
     socials = [
         ("📸 Instagram", INSTAGRAM),
-        ("🎵 TikTok", TIKTOK),
         ("👾 Discord", DISCORD),
     ]
     live = [InlineKeyboardButton(label, url=url) for label, url in socials if url]
@@ -2244,7 +2243,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📖 Help", callback_data="info:help")],
         # Row 6 — externals
         [InlineKeyboardButton("🌐 Website", url=WEBSITE),
-         InlineKeyboardButton("𝕏 Twitter", url=TWITTER)],
+         InlineKeyboardButton("🎵 TikTok", url=TIKTOK)],
     ])
     await update.effective_message.reply_text(
         f"{BRAND}  <i>v{__version__}</i>\n\n"
@@ -3920,7 +3919,7 @@ async def autofaq_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def socials(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = [
         [InlineKeyboardButton("🌐 Website", url=_const("WEBSITE")),
-         InlineKeyboardButton("𝕏 Twitter", url=_const("TWITTER"))],
+         InlineKeyboardButton("🎵 TikTok", url=_const("TIKTOK"))],
         [InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM")),
          InlineKeyboardButton("📸 Instagram", url=_const("INSTAGRAM"))],
     ]
@@ -3990,14 +3989,14 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @group_only
 @admin_only
 async def raid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Post a raid call-to-action. Optional: /raid <tweet link> to target a post."""
+    """Post a raid call-to-action. Optional: /raid <post link> to target a post."""
     target = ""
     if context.args:
         cand = context.args[0]
         if cand.startswith("http"):
             target = cand
-    link = target or _const("TWITTER")
-    label = "🐦 Go to the Post" if target else "𝕏 Go to ⚡ZAPP on X"
+    link = target or _const("TIKTOK")
+    label = "🎯 Go to the Post" if target else "🎵 Go to ⚡ZAPP on TikTok"
     await update.effective_message.reply_text(
         "⚡ <b>RAID TIME</b> ⚡\n\n"
         "All hands on deck — like, repost, comment. Let's make ⚡ZAPP loud. 🔊\n"
@@ -4031,7 +4030,7 @@ def _ap_buy_kb():
 def _ap_socials_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌐 Website", url=_const("WEBSITE")),
-         InlineKeyboardButton("𝕏 Twitter", url=_const("TWITTER"))],
+         InlineKeyboardButton("🎵 TikTok", url=_const("TIKTOK"))],
         [InlineKeyboardButton("💬 Telegram", url=_const("TELEGRAM"))],
     ])
 
@@ -5059,10 +5058,10 @@ async def translate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===========================================================================
 # task -> (display label, reward points, max per day)
 SOCIAL_TASKS = {
-    "twitter":  ("𝕏 Repost / Quote", 30, 1),
-    "rt":       ("𝕏 Repost / Quote", 30, 1),
-    "repost":   ("𝕏 Repost / Quote", 30, 1),
-    "tweet":    ("𝕏 Original tweet", 40, 1),
+    "twitter":  ("🎵 TikTok repost / duet", 30, 1),
+    "rt":       ("🎵 TikTok repost / duet", 30, 1),
+    "repost":   ("🎵 TikTok repost / duet", 30, 1),
+    "tweet":    ("🎵 Original TikTok", 40, 1),
     "story":    ("📸 Instagram/Story", 25, 1),
     "insta":    ("📸 Instagram/Story", 25, 1),
     "tiktok":   ("🎵 TikTok post", 40, 1),
@@ -5115,8 +5114,8 @@ async def tasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         seen.add(label)
         lines.append(f"• <code>/submit {k}</code> — {label}  →  <b>+{reward}</b> "
                      f"(max {cap}/day)")
-    lines.append("\nExample: repost our tweet, screenshot it, reply to the "
-                 "screenshot with <code>/submit twitter</code> ✅")
+    lines.append("\nExample: repost our TikTok, screenshot it, reply to the "
+                 "screenshot with <code>/submit repost</code> ✅")
     lines.append("Points feed /top and the 🏁 Race to 369. ∞ 3 · 6 · 9 ∞")
     await update.effective_message.reply_text(
         "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -5131,7 +5130,7 @@ async def submit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not reply:
         await msg.reply_text(
             "📨 <b>How to submit:</b> do the action, then <b>reply to your proof</b> "
-            "(a screenshot, your tweet link, the meme/GIF/sticker) with "
+            "(a screenshot, your TikTok link, the meme/GIF/sticker) with "
             "<code>/submit &lt;type&gt;</code>.\nSee all tasks &amp; rewards: /tasks",
             parse_mode=ParseMode.HTML)
         return
@@ -5862,7 +5861,7 @@ def _autofaq_intent(text):
         return "safe"
     if is_q and re.search(r"\bwhitepaper\b|\bwhite paper\b", t):
         return "wp"
-    if is_q and re.search(r"\bsocials?\b|\btwitter\b|\bwebsite\b|\binstagram\b", t):
+    if is_q and re.search(r"\bsocials?\b|\btwitter\b|\btiktok\b|\bwebsite\b|\binstagram\b", t):
         return "socials"
     if re.search(r"\bwhen\b.{0,6}\b(moon|pump|lambo|ath|listing)\b", t):
         return "moon"
@@ -5922,7 +5921,7 @@ async def _autofaq(update, msg, chat_id):
                 "📣 <b>⚡ZAPP Socials</b>", parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🌐 Website", url=WEBSITE),
-                     InlineKeyboardButton("𝕏 Twitter", url=TWITTER)],
+                     InlineKeyboardButton("🎵 TikTok", url=TIKTOK)],
                     [InlineKeyboardButton("💬 Telegram", url=TELEGRAM)]]),
                 disable_web_page_preview=True)
         elif intent == "moon":
