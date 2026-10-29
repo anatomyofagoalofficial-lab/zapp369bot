@@ -4268,6 +4268,83 @@ async def _check_milestone(context, chat_id, uid, total, name=None):
     await fn(context, chat_id, uid, total, name)
 
 
+
+# --------------------------- ⚡ZAPP arcade clips ----------------------------
+# Telegram's own dice animations stopped showing in Oct 2026 (blank for ⚽ 🏀 on
+# Telegram Web, a still picture on iPhone 13.1+). The bot now sends its own
+# ⚡ZAPP animation for every result. All clips ship in arcade.zip next to this file.
+import tempfile
+import zipfile
+
+_ARCADE_ZIP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arcade.zip")
+_ARCADE_DIR = os.path.join(tempfile.gettempdir(), "zapp_arcade")
+_ARCADE_IDS = {}   # clip name -> Telegram file_id (upload once, reuse after)
+_ARCADE_WAIT = 2.5  # seconds, so the clip lands before the result text
+
+
+def _arcade_path(clip):
+    path = os.path.join(_ARCADE_DIR, clip + ".mp4")
+    if not os.path.exists(path) and os.path.exists(_ARCADE_ZIP):
+        try:
+            with zipfile.ZipFile(_ARCADE_ZIP) as zf:
+                zf.extractall(_ARCADE_DIR)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("arcade unzip failed: %s", e)
+    return path if os.path.exists(path) else None
+
+
+def _arcade_clip(game, val):
+    if game == "roll":
+        return f"roll_{val}"
+    if game == "dart":
+        return "dart_bull" if val == 6 else ("dart_hit" if val >= 4 else "dart_miss")
+    if game == "basket":
+        return "basket_swish" if val >= 4 else ("basket_rim" if val == 3 else "basket_brick")
+    if game == "football":
+        side = random.choice("lr")
+        return f"football_goal_{side}" if val >= 3 else f"football_saved_{side}"
+    return f"spin_{val}"
+
+
+async def _arcade(update, context, clip):
+    """Send a ⚡ZAPP game clip as a reply. True if it was shown."""
+    msg = update.effective_message
+    if msg is None:
+        return False
+    try:
+        fid = _ARCADE_IDS.get(clip)
+        if fid:
+            await msg.reply_animation(fid)
+            return True
+        path = _arcade_path(clip)
+        if not path:
+            return False
+        with open(path, "rb") as fh:
+            m = await msg.reply_animation(fh, filename=clip + ".mp4", width=480, height=480)
+        if m and m.animation:
+            _ARCADE_IDS[clip] = m.animation.file_id
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("arcade clip %s failed: %s", clip, e)
+        return False
+
+
+async def _play(update, context, game, emoji, val):
+    """Show the ⚡ZAPP clip for val. Falls back to Telegram's dice if the clip
+    can't be sent, and then uses the dice's own value. Returns the final value."""
+    if await _arcade(update, context, _arcade_clip(game, val)):
+        await asyncio.sleep(_ARCADE_WAIT)
+        return val
+    try:
+        m = await context.bot.send_dice(update.effective_chat.id, emoji=emoji)
+        if m and m.dice:
+            val = m.dice.value
+    except Exception:  # noqa: BLE001
+        pass
+    await asyncio.sleep(3)
+    return val
+
+
 # --------------------------- /spin (daily slot) ----------------------------
 SPIN_DAILY_MAX = 3
 # Telegram 🎰 reel symbols, index 0..3 (matches the value decode below)
@@ -4331,12 +4408,8 @@ async def spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"resting. Come back tomorrow! ⚡\n\n{_slot_payout_table()}",
             parse_mode=ParseMode.HTML)
         return
-    # spin the native animated slot machine
-    try:
-        dm = await context.bot.send_dice(chat.id, emoji="🎰")
-        val = dm.dice.value
-    except Exception:  # noqa: BLE001
-        val = random.randint(1, 64)
+    # ⚡ZAPP slot clip (falls back to Telegram's 🎰 if the clip can't be sent)
+    val = await _play(update, context, "spin", "🎰", random.randint(1, 64))
     # record the spin (resets count automatically on a new day)
     db.execute(
         "INSERT INTO daily_use (chat_id,user_id,game,day,count) VALUES (?,?,'spin',?,1) "
@@ -4380,12 +4453,7 @@ async def flip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = target_chat(update)
-    try:
-        m = await context.bot.send_dice(update.effective_chat.id, emoji="🎲")
-        val = m.dice.value if m and m.dice else random.randint(1, 6)
-    except Exception:  # noqa: BLE001
-        val = random.randint(1, 6)
-    await asyncio.sleep(3)
+    val = await _play(update, context, "roll", "🎲", random.randint(1, 6))
     points = 6 if val == 6 else (3 if val == 5 else 1)
     flavor = "🎲 SIX! Lucky charge ⚡" if val == 6 else (
         "🎲 Five — close to the top ⚡" if val == 5 else f"🎲 Rolled <b>{val}</b> ⚡")
@@ -4399,12 +4467,7 @@ async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = target_chat(update)
-    try:
-        m = await context.bot.send_dice(update.effective_chat.id, emoji="🎯")
-        val = m.dice.value if m and m.dice else random.randint(1, 6)
-    except Exception:  # noqa: BLE001
-        val = random.randint(1, 6)
-    await asyncio.sleep(3)
+    val = await _play(update, context, "dart", "🎯", random.randint(1, 6))
     if val == 6:
         flavor, points = "🎯 <b>BULLSEYE!</b> Dead center ⚡", 6
     elif val >= 4:
@@ -4421,12 +4484,7 @@ async def dart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def basket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = target_chat(update)
-    try:
-        m = await context.bot.send_dice(update.effective_chat.id, emoji="🏀")
-        val = m.dice.value if m and m.dice else random.randint(1, 5)
-    except Exception:  # noqa: BLE001
-        val = random.randint(1, 5)
-    await asyncio.sleep(3)
+    val = await _play(update, context, "basket", "🏀", random.randint(1, 5))
     # native basket dice: 4 and 5 are made shots
     if val >= 4:
         flavor, points = "🏀 <b>SWISH!</b> Nothing but net ⚡", 6
@@ -4445,12 +4503,7 @@ async def football(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """⚽ Penalty shot — native football dice. Values 3/4/5 = GOAL."""
     user = update.effective_user
     chat_id = target_chat(update)
-    try:
-        m = await context.bot.send_dice(update.effective_chat.id, emoji="⚽")
-        val = m.dice.value if m and m.dice else 0
-    except Exception:  # noqa: BLE001
-        val = 0
-    await asyncio.sleep(3)
+    val = await _play(update, context, "football", "⚽", random.randint(1, 5))
     goal = val >= 3
     flavor = ("⚽ <b>GOOOAL!</b> ⚡ Back of the net! 🥅" if goal
               else "🧤 <b>SAVED!</b> Keeper denies you — try again ⚡")
@@ -5328,7 +5381,7 @@ def _is_approved(chat_id, user_id):
 
 
 def _lock_triggered(locks, msg):
-    ents = (msg.entities or []) + (msg.caption_entities or [])
+    ents = list(msg.entities or ()) + list(msg.caption_entities or ())
     text = (msg.text or msg.caption or "")
     return (
         ("sticker" in locks and msg.sticker) or
